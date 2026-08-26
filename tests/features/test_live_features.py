@@ -1,0 +1,69 @@
+"""The feature builder is the one place features may be computed (spec section 6.4)."""
+
+import math
+
+from app.db.models.enums import SeriesFormat
+from app.features.game_state import GameState, SeriesContext, TeamState
+from app.features.live import FEATURE_ORDER, as_vector, build_live_features
+
+
+def make_state(**overrides: object) -> GameState:
+    defaults: dict[str, object] = {
+        "match_id": 1,
+        "minute": 20,
+        "radiant": TeamState(
+            score=15,
+            net_worth=60000,
+            towers_alive={"top": 3, "mid": 3, "bot": 3},
+            barracks_alive={"top": 2, "mid": 2, "bot": 2},
+            player_net_worths=(15000, 13000, 12000, 11000, 9000),
+        ),
+        "dire": TeamState(
+            score=8,
+            net_worth=48000,
+            towers_alive={"top": 2, "mid": 1, "bot": 3},
+            barracks_alive={"top": 2, "mid": 2, "bot": 2},
+            player_net_worths=(12000, 11000, 9000, 8000, 8000),
+        ),
+        "gold_adv": 12000,
+        "xp_adv": 9000,
+    }
+    defaults.update(overrides)
+    return GameState(**defaults)  # type: ignore[arg-type]
+
+
+def test_every_declared_feature_is_produced() -> None:
+    features = build_live_features(make_state())
+    assert set(features) == set(FEATURE_ORDER)
+    assert len(as_vector(features)) == len(FEATURE_ORDER)
+
+
+def test_vector_order_is_stable_regardless_of_dict_order() -> None:
+    features = build_live_features(make_state())
+    shuffled = dict(reversed(list(features.items())))
+    assert as_vector(shuffled) == as_vector(features)
+
+
+def test_building_and_time_features() -> None:
+    features = build_live_features(make_state())
+    assert features["tower_diff"] == 3.0  # 9 radiant towers vs 6 dire
+    assert features["kill_diff"] == 7.0
+    assert features["log_minute"] == math.log(21)
+    # Normalising by time is what stops a minute-5 lead looking like a minute-40 lead.
+    assert features["gold_adv_norm"] == 12000 / 25
+
+
+def test_series_context_travels_with_game_number() -> None:
+    """game_in_series alone is a trap - it must arrive with format and conditionality."""
+    features = build_live_features(
+        make_state(
+            series=SeriesContext(
+                series_format=SeriesFormat.BO2,
+                game_in_series=2,
+                is_conditional_game=False,
+            )
+        )
+    )
+    assert features["game_in_series"] == 2.0
+    assert features["series_len"] == 2.0
+    assert features["is_conditional_game"] == 0.0

@@ -1,0 +1,47 @@
+"""arq worker entrypoint (spec sections 9.1, 10).
+
+Run with:  arq app.workers.settings.WorkerSettings
+"""
+
+from typing import Any, ClassVar
+
+from arq.connections import RedisSettings
+from arq.cron import cron
+
+from app.core.config import get_settings
+from app.core.logging import configure_logging
+from app.ingestion.workers.backfill import backfill_pro_matches
+from app.ingestion.workers.live_poller import poll_live_games
+from app.ingestion.workers.sync import sync_liquipedia
+
+
+async def startup(ctx: dict[str, Any]) -> None:
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    ctx["settings"] = settings
+
+
+async def shutdown(ctx: dict[str, Any]) -> None:
+    from app.core.redis import close_redis
+    from app.db.session import dispose_engine
+
+    await close_redis()
+    await dispose_engine()
+
+
+class WorkerSettings:
+    redis_settings = RedisSettings(
+        host=get_settings().redis_host,
+        port=get_settings().redis_port,
+        database=get_settings().redis_db,
+    )
+    functions: ClassVar[list[Any]] = [backfill_pro_matches, poll_live_games, sync_liquipedia]
+    cron_jobs: ClassVar[list[Any]] = [
+        # Live loop: every 30s, per spec section 2.4.
+        cron(poll_live_games, second={0, 30}, run_at_startup=True, max_tries=1),
+        # Liquipedia: no more than hourly, everything else served from cache.
+        cron(sync_liquipedia, minute=7, max_tries=2),
+    ]
+    on_startup = startup
+    on_shutdown = shutdown
+    max_jobs = 10
