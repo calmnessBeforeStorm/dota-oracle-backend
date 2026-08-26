@@ -8,7 +8,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-dota}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dota}
     ports:
-      - "5432:5432"
+      # Published only so you can reach the DB from the host (psql, DBeaver).
+      # Override in .env if the port is already taken on your machine.
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -20,7 +22,9 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      # Same as postgres: the app talks to redis over the compose network,
+      # this mapping exists for redis-cli from the host.
+      - "${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -36,7 +40,7 @@ services:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
     ports:
-      - "8000:8000"
+      - "${API_HOST_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
