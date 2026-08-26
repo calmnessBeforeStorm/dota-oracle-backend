@@ -127,5 +127,7 @@ Docs API: `http://localhost:8000/docs`.
 - Каждая фича — отдельная ветка от `development`: `feature/<кратко>`, `fix/<кратко>`.
 - Коммиты подписываются почтой **`ersaim.adilet@yandex.kz`** (в репозитории уже прописан
   локальный `user.email`, не перезаписывать глобальным).
+- **Сообщения коммитов — на английском**, в императиве: `add live match poller`, а не
+  `added changes`. Трейлеры об авторстве ИИ не добавляются.
 - Мердж: `feature/*` → `development` → `main`.
 - Перед PR: `ruff check . && mypy app && pytest` должны проходить.
