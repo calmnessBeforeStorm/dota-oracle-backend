@@ -38,4 +38,7 @@ async def subscribe_predictions(match_id: int) -> AsyncIterator[str]:
                 yield str(message["data"])
     finally:
         await pubsub.unsubscribe(f"{LIVE_CHANNEL_PREFIX}{match_id}")
-        await pubsub.aclose()
+        # redis-py ships py.typed, but PubSub.aclose() has no return annotation
+        # (redis 8.1.0, redis/asyncio/client.py), so strict mypy rejects the call.
+        # close() and reset() are deprecated aliases for it, so aclose() stays correct.
+        await pubsub.aclose()  # type: ignore[no-untyped-call]
