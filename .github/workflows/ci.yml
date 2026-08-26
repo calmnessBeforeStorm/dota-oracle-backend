@@ -9,6 +9,22 @@ on:
 jobs:
   quality:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: dota_oracle
+          POSTGRES_USER: dota
+          POSTGRES_PASSWORD: dota
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dota"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -33,6 +49,14 @@ jobs:
 
       - name: Tests
         run: pytest
+
+      # Proves the migrations actually run, both ways. The DB-free drift checks in
+      # tests/test_migrations.py cannot catch a migration that is simply broken SQL.
+      - name: Migrations apply and roll back
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
 
   docker:
     runs-on: ubuntu-latest
