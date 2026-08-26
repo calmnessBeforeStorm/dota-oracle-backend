@@ -148,13 +148,36 @@
 Список идущих турнирных матчей. Опрос каждые **20–30 секунд**.
 
 Ключевые поля:
-- `match_id`, `lobby_id`, **`server_steam_id`** — нужен для C2
+- `match_id`, `lobby_id`
 - `league_id`, `league_node_id`
 - `radiant_team{team_id, team_name, team_logo}`, `dire_team{...}`
 - `radiant_series_wins`, `dire_series_wins`, `series_type` — счёт в серии
 - **`stream_delay_s`** — задержка трансляции; важно для UI, см. §7.4
-- `scoreboard{duration, roshan_respawn_timer, radiant{score, tower_state, barracks_state, players[]}, dire{...}}`
+- `scoreboard{duration, roshan_respawn_timer, radiant{score, tower_state, barracks_state, picks, bans, players[]}, dire{...}}`
 - `players[]` — заявленные составы с `account_id` и `hero_id`
+
+> **Проверено на живом API 26.08.2026: `server_steam_id` в ответе отсутствует.**
+> Замер по 37 идущим турнирным играм: поле не пришло ни в одной (`radiant_team` — в 21 из 37,
+> остальные поля — во всех 37). `lobby_id` не является заменой: `GetRealtimeStats` с ним
+> отвечает `400 Bad Request`. Значит, **связка C1 → C2 в описанном виде не работает.**
+>
+> Практические следствия:
+> 1. **`scoreboard` из C1 самодостаточен для live-признаков.** По игроку приходят
+>    `net_worth`, `gold`, `level`, `xp_per_min`, `gold_per_min`, `kills`/`death`/`assists`,
+>    `last_hits`, `denies`, `hero_id`, `account_id`. По команде — `score`, `tower_state`,
+>    `barracks_state`, `picks`, `bans`; по игре — `duration` и `roshan_respawn_timer`.
+> 2. **`tower_state` и `barracks_state` — битовые маски того же формата, что
+>    `tower_status_radiant` / `barracks_status_radiant` у OpenDota.** Это упрощает
+>    train/serve parity по строениям, а не усложняет: обе стороны декодируются одним кодом.
+> 3. Чего в C1 нет по сравнению с C2: поминутного ряда `graph_gold`, координат игроков и
+>    точного `game_state`. Для признаков из §6.1 это некритично — `gold_adv` считается
+>    суммированием `net_worth` по командам.
+> 4. `server_steam_id` доступен через `GET /IDOTA2Match_570/GetTopLiveGame/v1/?partner=0`
+>    (проверено: 10/10 игр с полем, `GetRealtimeStats` по нему работает), но это топ игр по
+>    MMR, а не турнирные матчи, — как источник по Tier 1 не годится.
+>
+> **Вывод: основным каналом live-состояния считать C1, а не C2.** C2 использовать
+> оппортунистически, если `server_steam_id` удастся получить.
 
 #### C2. `GET /IDOTA2MatchStats_570/GetRealtimeStats/v1/?server_steam_id={id}`
 
@@ -166,7 +189,8 @@
 - `buildings[]{team, type, lane, tier, destroyed, x, y}` — **точное состояние строений**
 - `graph_data{graph_gold}` — ряд преимущества по золоту
 
-**Именно C2 даёт признаки, изоморфные обучающим.** Соответствие полей train ↔ serve обязано быть покрыто тестами (см. §6.4).
+**Признаки, изоморфные обучающим, даёт C1 (см. врезку выше), а C2 — только когда доступен
+`server_steam_id`.** Соответствие полей train ↔ serve обязано быть покрыто тестами (см. §6.4).
 
 #### C3. Вспомогательные
 
@@ -215,7 +239,7 @@ Fallback до готовности маппинга — `tier == "premium"` из
 | Таблица | Назначение |
 |---|---|
 | `raw_matches` | `match_id`, `source`, `fetched_at`, `payload JSONB` — полный ответ API как есть |
-| `raw_live_snapshots` | `match_id`, `server_steam_id`, `captured_at`, `payload JSONB` — сырые ответы GetRealtimeStats |
+| `raw_live_snapshots` | `match_id`, `server_steam_id` (nullable, см. врезку в §2.4/C1), `captured_at`, `payload JSONB` — сырые ответы GetLiveLeagueGames / GetRealtimeStats |
 | `raw_liquipedia` | `slug`, `fetched_at`, `payload JSONB` |
 
 **Принцип: сырьё храним целиком и навсегда.** Фичи будут переразбираться десятки раз, перекачивать данные при этом недопустимо (квоты, время, риск исчезновения источника).

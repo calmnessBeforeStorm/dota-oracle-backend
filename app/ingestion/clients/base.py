@@ -5,6 +5,7 @@ is a hard budget for the backfill. Every client goes through this class.
 """
 
 import asyncio
+import re
 from types import TracebackType
 from typing import Any, Self
 
@@ -19,6 +20,25 @@ from tenacity import (
 from app.core.logging import get_logger
 
 log = get_logger(__name__)
+
+
+#: Credentials we send as query parameters. httpx puts the full URL into the text of
+#: HTTPStatusError, which then lands in structlog and Sentry, so it gets scrubbed first.
+#: Anchored on the query separator and longest-alternative-first, so `api_key=` matches
+#: as a whole rather than as a bare `key=`.
+_SECRET_RE = re.compile(
+    r"([?&])(access_token|api_key|token|key)=[^&\s'\"]+",
+    re.IGNORECASE,
+)
+
+
+def redact(text: str) -> str:
+    """Replace the value of any credential query parameter with ***.
+
+    Applied to anything derived from a request URL before it reaches a log line or an
+    exception message. Cheap, and the alternative is an API key sitting in Sentry forever.
+    """
+    return _SECRET_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}=***", text)
 
 
 class RateLimitedError(Exception):
@@ -82,11 +102,25 @@ class BaseClient:
         if response.status_code == 429:
             retry_after = response.headers.get("Retry-After")
             raise RateLimitedError(float(retry_after) if retry_after else None)
-        response.raise_for_status()
+        raise_for_status(response)
         return response.json()
 
     async def post_json(self, path: str, payload: dict[str, Any]) -> Any:
         await self._throttle()
         response = await self._client.post(path, json=payload)
-        response.raise_for_status()
+        raise_for_status(response)
         return response.json()
+
+
+def raise_for_status(response: httpx.Response) -> None:
+    """`response.raise_for_status()` with credentials stripped from the message.
+
+    The exception still carries the original request object, so log `str(exc)` and never
+    `exc.request.url` - the latter is unredacted.
+    """
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise httpx.HTTPStatusError(
+            redact(str(exc)), request=exc.request, response=exc.response
+        ) from None

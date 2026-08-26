@@ -23,14 +23,21 @@ class RawMatch(Base):
 
 
 class RawLiveSnapshot(Base):
-    """Raw GetRealtimeStats responses, one row per poll."""
+    """Raw live responses, one row per poll.
+
+    `source` distinguishes the two channels, because they are not interchangeable:
+    GetLiveLeagueGames (C1) is the primary one, and GetRealtimeStats (C2) only works when a
+    `server_steam_id` is known - which, measured against the live API, it usually is not
+    (see the note in spec section 2.4/C1). Hence the nullable column.
+    """
 
     __tablename__ = "raw_live_snapshots"
     __table_args__ = (Index("ix_raw_live_snapshots_match_captured", "match_id", "captured_at"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     match_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    server_steam_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    server_steam_id: Mapped[int | None] = mapped_column(BigInteger)
+    source: Mapped[str] = mapped_column(String(32), default="live_league_games", nullable=False)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 

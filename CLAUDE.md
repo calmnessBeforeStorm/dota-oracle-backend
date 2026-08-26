@@ -88,6 +88,31 @@ app/
 - Вероятность исхода Bo2 — трёхзначная (2–0 / 1–1 / 0–2), мультиномиальная. Наивная свёртка
   `p²/2p(1−p)/(1−p)²` — только отправная точка: карты не независимы, реальная доля 1–1 выше.
 
+## Live-источник: спека расходится с реальностью (проверено 26.08.2026)
+
+Спека описывала связку C1 → C2: из `GetLiveLeagueGames` берём `server_steam_id`, по нему
+дёргаем `GetRealtimeStats`. **На живом API это не работает.**
+
+- `server_steam_id` не пришёл **ни в одной из 37** идущих турнирных игр.
+- `lobby_id` не заменяет его: `GetRealtimeStats` отвечает `400 Bad Request`.
+- `GetTopLiveGame` отдаёт `server_steam_id` (10/10), но это топ игр по MMR, а не Tier 1.
+
+**Основной канал live-состояния — C1 (`GetLiveLeagueGames`), а не C2.** Его `scoreboard`
+самодостаточен: по игроку — `net_worth`, `gold`, `level`, `xp_per_min`, `gold_per_min`,
+`kills`/`death`/`assists`, `last_hits`, `denies`; по команде — `score`, `tower_state`,
+`barracks_state`, `picks`, `bans`; по игре — `duration`, `roshan_respawn_timer`.
+
+Два следствия для кода:
+
+1. `tower_state` и `barracks_state` — **битовые маски того же формата, что
+   `tower_status_radiant` / `barracks_status_radiant` у OpenDota**. Декодер писать один,
+   общий для обоих адаптеров, — это прямой выигрыш для train/serve parity (§6.4).
+2. `gold_adv` на live-стороне считается суммой `net_worth` по командам, а не из
+   `graph_gold` (ряда в C1 нет). Расхождение с офлайн-расчётом обязано быть покрыто
+   регрессионным тестом.
+
+`raw_live_snapshots.server_steam_id` поэтому nullable, а `source` различает канал.
+
 ## Внешние источники и их лимиты (§2)
 
 | Источник | Роль | Лимит, который реально бьёт |
