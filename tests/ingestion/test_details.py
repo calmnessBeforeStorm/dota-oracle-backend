@@ -243,3 +243,78 @@ def test_parser_tolerates_missing_sections(bad: dict[str, Any]) -> None:
     assert isinstance(parsed["players"], list)
     assert isinstance(parsed["drafts"], list)
     assert isinstance(parsed["objectives"], list)
+
+
+class TestRateLimiting:
+    """A 429 means the quota is gone, and the wrong response to it is expensive.
+
+    Observed on a real run: OpenDota cut us off after 685 matches and the loop worked
+    through the remaining 4500 at one failure per second, fetching nothing and earning an
+    IP ban for the trouble.
+    """
+
+    class RateLimitedClient:
+        def __init__(self, succeed_first: int = 0) -> None:
+            self.succeed_first = succeed_first
+            self.calls = 0
+
+        async def match(self, match_id: int) -> dict[str, Any]:
+            from app.ingestion.clients.base import RateLimitedError
+
+            self.calls += 1
+            if self.calls > self.succeed_first:
+                raise RateLimitedError(retry_after=None)
+            return detail(match_id)
+
+    async def test_the_run_stops_instead_of_burning_the_list(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await upsert_raw_matches(
+            session,
+            RawSource.OPENDOTA_PRO_MATCHES,
+            [summary(i, offset_seconds=i * 60) for i in range(1, 21)],
+        )
+        await session.commit()
+        await normalize_pro_matches(sessionmaker)
+
+        client = self.RateLimitedClient(succeed_first=3)
+        report = await run_details_backfill(client, sessionmaker, limit=20)
+
+        assert report.fetched == 3
+        # Stopped on the fourth rather than trying the remaining sixteen.
+        assert client.calls == 4
+        assert "rate limited" in report.stopped_because
+
+    async def test_what_was_fetched_before_the_limit_is_kept(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Resuming later must not re-pay for matches already stored."""
+        await upsert_raw_matches(
+            session,
+            RawSource.OPENDOTA_PRO_MATCHES,
+            [summary(i, offset_seconds=i * 60) for i in range(1, 11)],
+        )
+        await session.commit()
+        await normalize_pro_matches(sessionmaker)
+
+        await run_details_backfill(self.RateLimitedClient(succeed_first=2), sessionmaker, limit=10)
+        await session.commit()
+        assert await count_missing_details(session) == 8
+
+    async def test_an_upstream_failing_everything_gives_up(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await upsert_raw_matches(
+            session,
+            RawSource.OPENDOTA_PRO_MATCHES,
+            [summary(i, offset_seconds=i * 60) for i in range(1, 41)],
+        )
+        await session.commit()
+        await normalize_pro_matches(sessionmaker)
+
+        client = FakeOpenDota(fail_on=set(range(1, 41)))
+        report = await run_details_backfill(client, sessionmaker, limit=40)
+
+        assert report.fetched == 0
+        assert len(client.calls) == 20  # the give-up limit, not all forty
+        assert report.stopped_because == "upstream failing every request"

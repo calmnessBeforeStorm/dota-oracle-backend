@@ -29,15 +29,33 @@ async def publish_prediction(match_id: int, payload: str) -> None:
     await get_redis().publish(f"{LIVE_CHANNEL_PREFIX}{match_id}", payload)
 
 
-async def subscribe_predictions(match_id: int) -> AsyncIterator[str]:
+#: How long to wait for a message before yielding an idle tick. Without one the loop parks
+#: in redis forever, which is fine until the client goes away or the process tries to stop:
+#: an open subscription then blocks shutdown, because nothing ever notices.
+IDLE_TICK_SECONDS = 5.0
+
+
+async def subscribe_predictions(match_id: int) -> AsyncIterator[str | None]:
+    """Yield predictions for a match, and `None` whenever nothing arrived in a while.
+
+    The idle tick is what lets the caller check that its client is still there. A live match
+    can go a minute between updates, and a subscription that cannot be interrupted is a
+    subscription that keeps the server from shutting down.
+    """
+    channel = f"{LIVE_CHANNEL_PREFIX}{match_id}"
     pubsub = get_redis().pubsub()
-    await pubsub.subscribe(f"{LIVE_CHANNEL_PREFIX}{match_id}")
+    await pubsub.subscribe(channel)
     try:
-        async for message in pubsub.listen():
-            if message["type"] == "message":
+        while True:
+            message = await pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=IDLE_TICK_SECONDS
+            )
+            if message is None:
+                yield None
+            elif message.get("type") == "message":
                 yield str(message["data"])
     finally:
-        await pubsub.unsubscribe(f"{LIVE_CHANNEL_PREFIX}{match_id}")
+        await pubsub.unsubscribe(channel)
         # redis-py ships py.typed, but PubSub.aclose() has no return annotation
         # (redis 8.1.0, redis/asyncio/client.py), so strict mypy rejects the call.
         # close() and reset() are deprecated aliases for it, so aclose() stays correct.

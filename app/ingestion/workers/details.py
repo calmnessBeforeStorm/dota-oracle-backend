@@ -1,8 +1,13 @@
 """Match detail backfill (spec section 2.2/A2, phase 1).
 
-`GET /matches/{id}` costs one call per map and is the main consumer of the OpenDota quota:
-measured at ~15 100 pro maps a year, a year of history is about 4.2 hours at 60 req/min and
-three years about 12.6 hours - which still fits inside a single month of the free 50 000.
+`GET /matches/{id}` costs one call per map and is by far the largest consumer of the
+OpenDota quota.
+
+Measured, not assumed. Throughput is bound by response time rather than by the stated
+60 req/min: 150 maps took 9m04s, about 16.5 a minute. And the binding constraint turned out
+to be the daily allowance, not the per-minute one - a run without an API key was cut off
+after 685 matches with a 429 carrying no Retry-After. Plan in days, not hours, unless a key
+or STRATZ is in play.
 
 This is the payload the whole project is built on. It carries the rosters, the draft, the
 objectives log and, for parsed matches, the per-minute series (`radiant_gold_adv`, `gold_t`
@@ -19,11 +24,16 @@ from app.core.logging import get_logger
 from app.db.models.matches import Match
 from app.db.models.raw import RawMatch
 from app.db.session import get_session_factory
+from app.ingestion.clients.base import RateLimitedError
 from app.ingestion.clients.opendota import OpenDotaClient
 from app.ingestion.repository import upsert_raw_matches
 from app.ingestion.sources import RawSource
 
 log = get_logger(__name__)
+
+#: Give up when nothing at all is coming back - something is wrong upstream, and hammering
+#: it is neither polite nor productive.
+CONSECUTIVE_FAILURE_LIMIT = 20
 
 
 class MatchDetailSource(Protocol):
@@ -36,6 +46,7 @@ class DetailsReport:
     fetched: int = 0
     failed: int = 0
     remaining: int = 0
+    stopped_because: str = "finished the list"
 
     def as_log_fields(self) -> dict[str, Any]:
         return {
@@ -43,6 +54,7 @@ class DetailsReport:
             "fetched": self.fetched,
             "failed": self.failed,
             "remaining": self.remaining,
+            "stopped_because": self.stopped_because,
         }
 
 
@@ -88,9 +100,19 @@ async def run_details_backfill(
     for match_id in match_ids:
         try:
             payload = await client.match(match_id)
+        except RateLimitedError as exc:
+            # The quota is gone. Working through the rest of the list at one failure per
+            # second fetches nothing and earns an IP ban; what is already stored is the
+            # checkpoint, so resuming later costs nothing.
+            report.stopped_because = f"rate limited after {report.fetched} matches"
+            log.warning("details.rate_limited", fetched=report.fetched, error=str(exc))
+            break
         except Exception as exc:
             report.failed += 1
             log.warning("details.failed", match_id=match_id, error=str(exc))
+            if report.failed >= CONSECUTIVE_FAILURE_LIMIT and report.fetched == 0:
+                report.stopped_because = "upstream failing every request"
+                break
             continue
 
         # Commit per match: the run takes hours and will be interrupted, and a call already

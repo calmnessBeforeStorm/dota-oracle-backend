@@ -42,10 +42,18 @@ def redact(text: str) -> str:
 
 
 class RateLimitedError(Exception):
-    """429 from an upstream source."""
+    """429 from an upstream source.
+
+    Distinct from a transport failure on purpose: retrying it faster makes it worse, and a
+    caller running a long backfill needs to stop rather than work through the rest of its
+    list at one failure per second - which is how an IP ban is earned.
+    """
 
     def __init__(self, retry_after: float | None = None) -> None:
-        super().__init__(f"rate limited, retry after {retry_after}s")
+        super().__init__(
+            "rate limited"
+            + (f", retry after {retry_after:.0f}s" if retry_after else ", no Retry-After given")
+        )
         self.retry_after = retry_after
 
 
@@ -90,9 +98,13 @@ class BaseClient:
             self._last_request_at = asyncio.get_running_loop().time()
 
     @retry(
-        retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
-        wait=wait_exponential(multiplier=1, min=2, max=60),
-        stop=stop_after_attempt(5),
+        # 429 included, but it waits far longer than a transport hiccup: the server has
+        # said it wants less traffic, and honouring that is the point.
+        retry=retry_if_exception_type(
+            (httpx.TransportError, httpx.HTTPStatusError, RateLimitedError)
+        ),
+        wait=wait_exponential(multiplier=2, min=2, max=120),
+        stop=stop_after_attempt(4),
         reraise=True,
     )
     async def get_json(self, path: str, **params: Any) -> Any:

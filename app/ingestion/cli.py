@@ -66,6 +66,7 @@ async def cmd_details(limit: int, oldest_first: bool) -> None:
     print(f"requested: {report.requested}")
     print(f"fetched:   {report.fetched}")
     print(f"failed:    {report.failed}")
+    print(f"stopped:   {report.stopped_because}")
     print(f"remaining: {report.remaining}")
     if report.remaining:
         hours = report.remaining / DETAIL_FETCH_PER_MINUTE / 60
