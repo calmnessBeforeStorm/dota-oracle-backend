@@ -5,6 +5,8 @@ the state at the END of the game. Read it into a minute-15 snapshot and the mode
 who won. Every key below is a real one, taken from the objectives logs we hold.
 """
 
+from typing import Any
+
 import pytest
 
 from app.features.buildings import (
@@ -202,26 +204,27 @@ class TestParseNpcId:
         assert parse_npc_id(999) is None
 
 
-class TestStateAtNpc:
-    DEATHS = [
-        {"time": 400, "npcId": 16, "isRadiant": True},
-        {"time": 800, "npcId": 19, "isRadiant": True},
-        {"time": 900, "npcId": 36, "isRadiant": True},
-        {"time": 1000, "npcId": 26, "isRadiant": False},
-    ]
+NPC_DEATHS: list[dict[str, Any]] = [
+    {"time": 400, "npcId": 16, "isRadiant": True},
+    {"time": 800, "npcId": 19, "isRadiant": True},
+    {"time": 900, "npcId": 36, "isRadiant": True},
+    {"time": 1000, "npcId": 26, "isRadiant": False},
+]
 
+
+class TestStateAtNpc:
     def test_only_events_up_to_the_minute_are_applied(self) -> None:
-        assert state_at_npc(self.DEATHS, minute=5, radiant=True).towers["top"] == 3
-        assert state_at_npc(self.DEATHS, minute=6, radiant=True).towers["top"] == 2
-        assert state_at_npc(self.DEATHS, minute=13, radiant=True).towers["top"] == 1
+        assert state_at_npc(NPC_DEATHS, minute=5, radiant=True).towers["top"] == 3
+        assert state_at_npc(NPC_DEATHS, minute=6, radiant=True).towers["top"] == 2
+        assert state_at_npc(NPC_DEATHS, minute=13, radiant=True).towers["top"] == 1
 
     def test_the_other_side_is_untouched(self) -> None:
-        assert state_at_npc(self.DEATHS, minute=20, radiant=False).towers["top"] == 2
-        assert state_at_npc(self.DEATHS, minute=20, radiant=False).tower_count == 10
+        assert state_at_npc(NPC_DEATHS, minute=20, radiant=False).towers["top"] == 2
+        assert state_at_npc(NPC_DEATHS, minute=20, radiant=False).tower_count == 10
 
     def test_unmapped_events_change_nothing(self) -> None:
-        without = [e for e in self.DEATHS if e["npcId"] != 36]
-        assert state_at_npc(self.DEATHS, 20, True) == state_at_npc(without, 20, True)
+        without = [e for e in NPC_DEATHS if e["npcId"] != 36]
+        assert state_at_npc(NPC_DEATHS, 20, True) == state_at_npc(without, 20, True)
 
     def test_starts_from_a_full_base(self) -> None:
         state = state_at_npc([], minute=0, radiant=True)
