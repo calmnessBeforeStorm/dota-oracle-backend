@@ -6,6 +6,7 @@ feature by a minute without failing anything else.
 """
 
 import json
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +79,7 @@ class TestSnapshots:
         snapshots = iter_snapshots(match)
         assert snapshots[0].radiant.tower_count == 11
         assert snapshots[0].dire.barracks_count == 6
-        for earlier, later in zip(snapshots, snapshots[1:], strict=False):
+        for earlier, later in pairwise(snapshots):
             assert later.radiant.tower_count <= earlier.radiant.tower_count
             assert later.dire.barracks_count <= earlier.dire.barracks_count
 
