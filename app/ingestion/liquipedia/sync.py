@@ -35,13 +35,23 @@ from app.ingestion.liquipedia.matching import (
 from app.ingestion.liquipedia.meta import TournamentMeta, parse_meta_description
 from app.ingestion.liquipedia.participants import (
     extract_participants,
+    extract_winner,
     normalize_team,
     roster_overlap,
+    same_team,
 )
 from app.ingestion.liquipedia.wikitext import parse_stage_formats
 from app.ingestion.repository import utcnow
 
 log = get_logger(__name__)
+
+
+def _as_utc(day: Any) -> Any:
+    """Stage dates are calendar days; the column stores an instant, so midnight UTC."""
+    from datetime import UTC, datetime
+
+    return None if day is None else datetime(day.year, day.month, day.day, tzinfo=UTC)
+
 
 #: Search hits to consider per league. More costs nothing extra - the categories for all of
 #: them come back in a single batched request.
@@ -138,6 +148,7 @@ async def league_evidence(session: AsyncSession) -> dict[int, LeagueEvidence]:
     ).all()
 
     names = await _team_names_by_league(session)
+    champions = await _champion_by_league(session)
 
     evidence: dict[int, LeagueEvidence] = {}
     for league_id, first, last, radiant_teams in rows:
@@ -148,8 +159,56 @@ async def league_evidence(session: AsyncSession) -> dict[int, LeagueEvidence]:
             # tournament, so distinct radiant teams is already the field size in practice.
             team_count=int(radiant_teams) or None,
             team_names=names.get(int(league_id), frozenset()),
+            champion=champions.get(int(league_id)),
         )
     return evidence
+
+
+async def _champion_by_league(session: AsyncSession) -> dict[int, str | None]:
+    """Whoever won the last map of each league - our stand-in for the champion.
+
+    A heuristic, and named as one: the last map played is the grand final in almost every
+    bracket, but a rescheduled match or a third-place decider can displace it. Good enough
+    to corroborate a match, never good enough to decide one on its own.
+    """
+    last_matches = (
+        select(Match.league_id, func.max(Match.start_time).label("played_at"))
+        .where(Match.league_id.is_not(None), Match.radiant_win.is_not(None))
+        .group_by(Match.league_id)
+        .subquery()
+    )
+    rows = (
+        await session.execute(
+            select(
+                Match.league_id,
+                Match.radiant_win,
+                Match.radiant_team_id,
+                Match.dire_team_id,
+            ).join(
+                last_matches,
+                (Match.league_id == last_matches.c.league_id)
+                & (Match.start_time == last_matches.c.played_at),
+            )
+        )
+    ).all()
+
+    champions: dict[int, str | None] = {}
+    winners: dict[int, int | None] = {}
+    for league_id, radiant_win, radiant_team_id, dire_team_id in rows:
+        winners[int(league_id)] = radiant_team_id if radiant_win else dire_team_id
+
+    wanted = {team_id for team_id in winners.values() if team_id}
+    if wanted:
+        name_rows = (
+            await session.execute(
+                select(TeamModel.team_id, TeamModel.name).where(TeamModel.team_id.in_(wanted))
+            )
+        ).all()
+        names: dict[int, str | None] = {int(team_id): name for team_id, name in name_rows}
+        for league_id, team_id in winners.items():
+            name = names.get(team_id) if team_id else None
+            champions[league_id] = normalize_team(str(name)) if name else None
+    return champions
 
 
 async def _team_names_by_league(session: AsyncSession) -> dict[int, frozenset[str]]:
@@ -254,6 +313,8 @@ async def escalate_uncertain(
 
         wikitext = await client.page_wikitext(proposal.page_title)
         overlap = roster_overlap(set(ours), extract_participants(wikitext))
+        # The page is already fetched, so the champion check is free.
+        agrees = same_team(evidence[proposal.league_id].champion, extract_winner(wikitext))
         stats.escalated += 1
 
         rescored = MappingProposal(
@@ -265,6 +326,7 @@ async def escalate_uncertain(
                 proposal.date_overlap,
                 proposal.team_agreement,
                 overlap,
+                agrees,
             ),
             tier=proposal.tier,
             is_lan=proposal.is_lan,
@@ -273,7 +335,9 @@ async def escalate_uncertain(
             date_overlap=proposal.date_overlap,
             team_agreement=proposal.team_agreement,
             roster_overlap=overlap,
+            winner_agrees=agrees,
             is_showmatch=proposal.is_showmatch,
+            meta=proposal.meta,
         )
         resolved[proposal.league_id] = rescored
 
@@ -290,6 +354,7 @@ async def escalate_uncertain(
             was=round(proposal.score, 3),
             now=round(rescored.score, 3),
             roster=None if overlap is None else round(overlap, 3),
+            winner_agrees=agrees,
         )
 
     return [resolved.get(p.league_id, p) for p in proposals], stats
@@ -330,15 +395,25 @@ async def apply_mapping(
         )
     )
     # Denormalized onto the league for querying; league_mappings stays the record.
+    values: dict[str, Any] = {
+        "liquipedia_slug": proposal.page_title,
+        "tier": proposal.tier.value,
+        "is_lan": proposal.is_lan,
+        "updated_at": timestamp,
+    }
+    # Nothing on the OpenDota side carries these, so there is nothing to cross-check them
+    # against - they are recorded because the schema has always had a place for them and
+    # they arrive free with the description we already read.
+    if proposal.meta:
+        if proposal.meta.prize_pool is not None:
+            values["prize_pool"] = proposal.meta.prize_pool
+        if proposal.meta.start_date:
+            values["start_date"] = proposal.meta.start_date
+        if proposal.meta.end_date:
+            values["end_date"] = proposal.meta.end_date
+
     await session.execute(
-        update(League)
-        .where(League.league_id == proposal.league_id)
-        .values(
-            liquipedia_slug=proposal.page_title,
-            tier=proposal.tier.value,
-            is_lan=proposal.is_lan,
-            updated_at=timestamp,
-        )
+        update(League).where(League.league_id == proposal.league_id).values(**values)
     )
 
 
@@ -347,6 +422,7 @@ async def sync_stage_formats(
     session: AsyncSession,
     league_id: int,
     page_title: str,
+    fallback_year: int | None = None,
 ) -> int:
     """Read the stages of one tournament page into `tournament_stages`.
 
@@ -354,7 +430,8 @@ async def sync_stage_formats(
     the page does not state a format for are not written: unknown stays unknown.
     """
     wikitext = await client.page_wikitext(page_title)
-    stages = parse_stage_formats(wikitext)
+    # Stage headings often omit the year; the tournament's own year fills it in.
+    stages = parse_stage_formats(wikitext, fallback_year=fallback_year)
     if not stages:
         return 0
 
@@ -366,6 +443,8 @@ async def sync_stage_formats(
             "stage_type": stage.stage_type.value,
             "default_format": stage.default_format.value,
             "liquipedia_slug": page_title,
+            "starts_at": _as_utc(stage.start_date),
+            "ends_at": _as_utc(stage.end_date),
             "created_at": now,
             "updated_at": now,
         }
@@ -380,11 +459,58 @@ async def sync_stage_formats(
             "stage_type": statement.excluded.stage_type,
             "default_format": statement.excluded.default_format,
             "liquipedia_slug": statement.excluded.liquipedia_slug,
+            "starts_at": statement.excluded.starts_at,
+            "ends_at": statement.excluded.ends_at,
             "updated_at": statement.excluded.updated_at,
         },
     )
     await session.execute(statement)
     return len(rows)
+
+
+async def _first_match_year(session: AsyncSession) -> dict[int, int]:
+    rows = (
+        await session.execute(
+            select(Match.league_id, func.min(Match.start_time))
+            .where(Match.league_id.is_not(None))
+            .group_by(Match.league_id)
+        )
+    ).all()
+    return {int(league_id): first.year for league_id, first in rows if first}
+
+
+async def refresh_stages(
+    client: LiquipediaSource,
+    session_factory: async_sessionmaker[AsyncSession],
+    limit: int | None = None,
+) -> int:
+    """Re-read the stages of leagues already mapped, without re-deciding the mapping.
+
+    Needed whenever the page parser learns to extract something it previously skipped -
+    stage dates, for one - since the mapping pass only visits leagues that have none.
+    """
+    async with session_factory() as session:
+        statement = select(League.league_id, League.liquipedia_slug, League.start_date).where(
+            League.liquipedia_slug.is_not(None)
+        )
+        if limit is not None:
+            statement = statement.limit(limit)
+        mapped = list((await session.execute(statement)).all())
+        # Stage headings usually omit the year. The league row may not know it either - it
+        # only learns one when its mapping is applied - so our own matches are the reliable
+        # source, and they are already loaded.
+        played_in = await _first_match_year(session)
+
+    written = 0
+    for league_id, slug, start_date in mapped:
+        year = start_date.year if start_date else played_in.get(int(league_id))
+        async with session_factory() as session:
+            written += await sync_stage_formats(
+                client, session, int(league_id), str(slug), fallback_year=year
+            )
+            await session.commit()
+    log.info("liquipedia.stages_refreshed", leagues=len(mapped), stages=written)
+    return written
 
 
 async def sync_liquipedia_leagues(
@@ -433,7 +559,15 @@ async def sync_liquipedia_leagues(
             await apply_mapping(session, proposal)
             if with_stages and proposal.tier is not LeagueTier.UNKNOWN:
                 report.stages_written += await sync_stage_formats(
-                    client, session, proposal.league_id, proposal.page_title
+                    client,
+                    session,
+                    proposal.league_id,
+                    proposal.page_title,
+                    fallback_year=(
+                        proposal.meta.start_date.year
+                        if proposal.meta and proposal.meta.start_date
+                        else None
+                    ),
                 )
             await session.commit()
         report.applied += 1

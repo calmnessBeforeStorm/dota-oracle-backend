@@ -79,7 +79,8 @@ class TournamentMeta:
     is_showmatch: bool = False
 
 
-def _month(name: str) -> int | None:
+def month_number(name: str) -> int | None:
+    """Month from its name or three-letter abbreviation."""
     return _MONTHS.get(name[:3].lower())
 
 
@@ -87,7 +88,7 @@ def parse_dates(text: str) -> tuple[date | None, date | None]:
     """Read the date range. Cross-month is tried first: it is the more specific pattern."""
     cross = _CROSS_MONTH.search(text)
     if cross:
-        m1, m2 = _month(cross.group("m1")), _month(cross.group("m2"))
+        m1, m2 = month_number(cross.group("m1")), month_number(cross.group("m2"))
         year = int(cross.group("y"))
         if m1 and m2:
             start = date(year, m1, int(cross.group("d1")))
@@ -99,7 +100,7 @@ def parse_dates(text: str) -> tuple[date | None, date | None]:
 
     same = _SAME_MONTH.search(text)
     if same:
-        month = _month(same.group("m"))
+        month = month_number(same.group("m"))
         year = int(same.group("y"))
         if month:
             return (
@@ -109,7 +110,7 @@ def parse_dates(text: str) -> tuple[date | None, date | None]:
 
     single = _SINGLE_DAY.search(text)
     if single:
-        month = _month(single.group("m"))
+        month = month_number(single.group("m"))
         if month:
             day = date(int(single.group("y")), month, int(single.group("d")))
             return day, day

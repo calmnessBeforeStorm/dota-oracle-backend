@@ -82,3 +82,35 @@ def roster_overlap(ours: set[str], theirs: set[str]) -> float | None:
             matched += 1
 
     return matched / len(ours)
+
+
+#: `{{Placement|1|{{Opponent|Team Spirit}}}}` - the prize pool table, first row.
+_FIRST_PLACE = re.compile(
+    r"\{\{\s*Placement\s*\|\s*1\s*\|(?P<body>.{0,200}?)\}\}\s*\}\}", re.IGNORECASE | re.DOTALL
+)
+
+
+def extract_winner(wikitext: str) -> str | None:
+    """Normalized name of the team placed first, if the page states one.
+
+    A far narrower signal than the roster - one name against a dozen - but it is the single
+    fact hardest for two different tournaments to share, and it costs nothing once the page
+    has already been fetched for the roster.
+    """
+    match = _FIRST_PLACE.search(wikitext)
+    if not match:
+        return None
+    opponent = _OPPONENT.search(match.group("body"))
+    if not opponent or _NOT_A_TEAM.match(opponent.group(1)):
+        return None
+    name = normalize_team(opponent.group(1))
+    return name or None
+
+
+def same_team(left: str | None, right: str | None) -> bool | None:
+    """Whether two names denote the same organisation. None when either is missing."""
+    if not left or not right:
+        return None
+    if left == right:
+        return True
+    return SequenceMatcher(None, left, right).ratio() >= SAME_TEAM_RATIO

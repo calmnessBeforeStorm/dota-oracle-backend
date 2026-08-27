@@ -19,8 +19,10 @@ section 3 anticipates.
 
 import re
 from dataclasses import dataclass
+from datetime import date
 
 from app.db.models.enums import SeriesFormat, StageType
+from app.ingestion.liquipedia.meta import month_number
 
 #: `{{Abbr/Bo3}}` and `{{abbr/Bo3}}` both occur in the wild.
 ABBR_FORMAT = re.compile(r"\{\{\s*abbr/(bo[1-5])\s*\}\}", re.IGNORECASE)
@@ -60,11 +62,60 @@ class StageFormat:
     formats_seen: tuple[SeriesFormat, ...]
     #: The line the default was taken from - what a reviewer needs to judge the guess.
     evidence: str
+    #: Stage headings usually carry their dates. They are what lets a series be attached to
+    #: the stage it was played in, and therefore what gives the series its format.
+    start_date: date | None = None
+    end_date: date | None = None
 
     @property
     def is_ambiguous(self) -> bool:
         """True when the stage mixed formats and the default is a judgement call."""
         return len(set(self.formats_seen)) > 1
+
+
+#: "May 13", "October 15" - stage headings state dates without a weekday. Non-months that
+#: fit the shape are dropped by the month lookup, so no word boundary is needed.
+_MONTH_DAY = re.compile(r"([A-Za-z]{3,9})\s+(\d{1,2})")
+_YEAR = re.compile(r"(20\d{2})")
+
+
+def parse_stage_dates(
+    text: str, fallback_year: int | None = None
+) -> tuple[date | None, date | None]:
+    """Dates from the remainder of a stage heading.
+
+    Three shapes occur on real pages, and taking the first and last date found handles all
+    of them - including a stage split over two weekends:
+
+        ''(May 13 - May 17)''
+        - ''October 12 - October 15, 2023''
+        - ''October 20 - October 22 (Playoffs Weekend) & October 27 - October 29 ..., 2023''
+
+    The year is often omitted, in which case the tournament's own year is used.
+    """
+    year_match = _YEAR.search(text)
+    year = int(year_match.group(1)) if year_match else fallback_year
+    if year is None:
+        return None, None
+
+    found: list[date] = []
+    for month_name, day in _MONTH_DAY.findall(text):
+        month = month_number(month_name)
+        if month is None:
+            continue
+        try:
+            found.append(date(year, month, int(day)))
+        except ValueError:  # 31 February and friends
+            continue
+
+    if not found:
+        return None, None
+
+    start, end = min(found), max(found)
+    # A stage running across New Year reads backwards once both dates share a year.
+    if end < start:
+        end = date(year + 1, end.month, end.day)
+    return start, end
 
 
 def extract_format_section(wikitext: str) -> str | None:
@@ -124,7 +175,7 @@ def _pick_default(candidates: list[tuple[SeriesFormat, str]]) -> SeriesFormat:
     return next(fmt for fmt, _ in candidates if counts[fmt] == top)
 
 
-def parse_stage_formats(wikitext: str) -> list[StageFormat]:
+def parse_stage_formats(wikitext: str, fallback_year: int | None = None) -> list[StageFormat]:
     """Read the Format section into stages that carry a series format.
 
     Stages with no format marker - participant lists, prize breakdowns - are dropped rather
@@ -134,7 +185,8 @@ def parse_stage_formats(wikitext: str) -> list[StageFormat]:
     if body is None:
         return []
 
-    stages: list[tuple[str, list[tuple[SeriesFormat, str]], list[str]]] = []
+    Dates = tuple[date | None, date | None]
+    stages: list[tuple[str, list[tuple[SeriesFormat, str]], list[str], Dates]] = []
     #: Bold headings currently open, by bullet depth. A nested one is a sub-stage of its
     #: parent ("Group Stage" -> "Phase One"), so the name is the whole chain.
     open_titles: dict[int, str] = {}
@@ -152,7 +204,11 @@ def parse_stage_formats(wikitext: str) -> list[StageFormat]:
             open_titles[depth] = heading.group("title").strip()
 
             name = " / ".join(open_titles[d] for d in sorted(open_titles))
-            stages.append((name, [], []))
+            dates = parse_stage_dates(heading.group("rest"), fallback_year)
+            # A sub-stage without its own dates inherits its parent's window.
+            if dates == (None, None) and stages:
+                dates = stages[-1][3]
+            stages.append((name, [], [], dates))
             # The heading line itself can carry the marker.
             for fmt, clause in markers_in(heading.group("rest")):
                 stages[-1][1].append((fmt, clause))
@@ -166,7 +222,7 @@ def parse_stage_formats(wikitext: str) -> list[StageFormat]:
                 stages[-1][2].append(line)
 
     parsed: list[StageFormat] = []
-    for name, candidates, lines in stages:
+    for name, candidates, lines, (start, end) in stages:
         if not candidates:
             continue
         stage_type = classify_stage(name)
@@ -180,6 +236,8 @@ def parse_stage_formats(wikitext: str) -> list[StageFormat]:
                 formats_seen=tuple(fmt for fmt, _ in candidates),
                 # The whole line, not the clause: a reviewer needs the context to judge.
                 evidence=" ".join(lines[0].split()),
+                start_date=start,
+                end_date=end,
             )
         )
     return parsed

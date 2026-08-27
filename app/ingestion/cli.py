@@ -6,6 +6,7 @@ scheduler should launch on its own - a stray restart would burn the OpenDota mon
     docker compose exec api python -m app.ingestion.cli backfill --pages 5
     docker compose exec api python -m app.ingestion.cli details --limit 200
     docker compose exec api python -m app.ingestion.cli normalize
+    docker compose exec api python -m app.ingestion.cli link-stages
     docker compose exec api python -m app.ingestion.cli status
 """
 
@@ -17,7 +18,7 @@ from app.core.logging import configure_logging
 from app.db.session import dispose_engine, get_session_factory
 from app.ingestion.clients.liquipedia import LiquipediaClient
 from app.ingestion.clients.opendota import OpenDotaClient
-from app.ingestion.liquipedia.sync import sync_liquipedia_leagues
+from app.ingestion.liquipedia.sync import refresh_stages, sync_liquipedia_leagues
 from app.ingestion.liquipedia.wikitext import parse_stage_formats
 from app.ingestion.normalize import (
     normalize_match_details,
@@ -26,6 +27,7 @@ from app.ingestion.normalize import (
 )
 from app.ingestion.repository import count_raw_matches, get_checkpoint
 from app.ingestion.sources import Checkpoint, RawSource
+from app.ingestion.stages import link_series_to_stages
 from app.ingestion.workers.backfill import run_backfill
 from app.ingestion.workers.details import count_missing_details, run_details_backfill
 
@@ -108,6 +110,12 @@ async def cmd_liquipedia(page: str) -> None:
         print(f"       {stage.evidence[:110]}")
 
 
+async def cmd_refresh_stages(limit: int | None) -> None:
+    async with LiquipediaClient() as client:
+        written = await refresh_stages(client, get_session_factory(), limit=limit)
+    print(f"stages written: {written}")
+
+
 async def cmd_map_leagues(limit: int | None, apply: bool, escalate: int) -> None:
     """Propose (and optionally apply) league -> Liquipedia mappings.
 
@@ -156,6 +164,24 @@ async def cmd_map_leagues(limit: int | None, apply: bool, escalate: int) -> None
             print(f" {mark}{proposal.score:.2f}  {proposal.league_name}")
             print(f"        -> {proposal.page_title}  [{proposal.tier.value}] [{proposal.signals}]")
         print(" ! = the matched page is not a tournament")
+
+
+async def cmd_link_stages() -> None:
+    """Attach series to stages and resolve what that implies. Touches no network."""
+    report = await link_series_to_stages(get_session_factory())
+
+    print(f"series seen:        {report.series_seen}")
+    print(f"linked to a stage:  {report.linked}")
+    print(f"formats set:        {report.formats_set}")
+    print(f"conditional flags:  {report.conditional_flags_set}")
+    print(f"outcomes resolved:  {report.outcomes_resolved}")
+    print(f"draws found:        {report.draws_found}")
+    print(f"left ambiguous:     {report.ambiguous}")
+    print(f"no stage covers:    {report.no_stage}")
+    if report.reasons:
+        print()
+        for reason, count in sorted(report.reasons.items(), key=lambda kv: -kv[1]):
+            print(f"  {count:>5}  {reason}")
 
 
 async def cmd_status() -> None:
@@ -230,6 +256,16 @@ def main() -> None:
         ),
     )
 
+    refresh = sub.add_parser(
+        "refresh-stages", help="re-read stages of already mapped leagues (one page per 30s)"
+    )
+    refresh.add_argument("--limit", type=int, default=None, help="stop after N leagues")
+
+    sub.add_parser(
+        "link-stages",
+        help="attach series to tournament stages, setting format and series outcome",
+    )
+
     sub.add_parser("status", help="show checkpoint and raw row counts")
 
     args = parser.parse_args()
@@ -243,6 +279,10 @@ def main() -> None:
                 await cmd_details(args.limit, args.oldest_first)
             elif args.command == "map-leagues":
                 await cmd_map_leagues(args.limit, args.apply, args.escalate)
+            elif args.command == "refresh-stages":
+                await cmd_refresh_stages(args.limit)
+            elif args.command == "link-stages":
+                await cmd_link_stages()
             elif args.command == "liquipedia":
                 await cmd_liquipedia(args.page)
             elif args.command == "normalize":

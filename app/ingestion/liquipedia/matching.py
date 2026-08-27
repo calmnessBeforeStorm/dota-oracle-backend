@@ -94,6 +94,8 @@ class LeagueEvidence:
     team_count: int | None = None
     #: Normalized names of the teams we actually saw play. The escalation signal.
     team_names: frozenset[str] = frozenset()
+    #: Who won the last match of the league - our best guess at the champion.
+    champion: str | None = None
 
 
 def date_overlap(
@@ -145,7 +147,11 @@ class MappingProposal:
     team_agreement: float | None = None
     #: Share of our teams found on the page. None until the expensive lookup is spent.
     roster_overlap: float | None = None
+    #: Whether the page's winner is the team that won our last match. None when unknown.
+    winner_agrees: bool | None = None
     is_showmatch: bool = False
+    #: Kept so the facts read off the page can be persisted without fetching them again.
+    meta: TournamentMeta | None = None
 
     @property
     def is_confident(self) -> bool:
@@ -164,6 +170,8 @@ class MappingProposal:
         # information: this candidate was never escalated.
         if self.roster_overlap is not None:
             parts.append(f"roster {self.roster_overlap:.2f}")
+        if self.winner_agrees is not None:
+            parts.append("winner ok" if self.winner_agrees else "winner MISMATCH")
         return " ".join(parts)
 
 
@@ -211,6 +219,7 @@ def combine_signals(
     overlap: float | None,
     teams: float | None,
     roster: float | None = None,
+    winner_agrees: bool | None = None,
 ) -> float:
     """Fold the corroborating signals into the final confidence.
 
@@ -241,6 +250,11 @@ def combine_signals(
         if roster >= ROSTER_DECISIVE:
             return max(score, 0.5 + 0.5 * roster)
         score = min(1.0, score + 0.15 * roster)
+
+    if winner_agrees is not None:
+        # One name against a dozen, so it confirms modestly. Disagreement is louder: two
+        # tournaments with the same field but different champions are different events.
+        score = min(1.0, score + 0.05) if winner_agrees else min(score, 0.5)
 
     return score
 
