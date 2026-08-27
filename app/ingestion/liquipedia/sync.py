@@ -468,6 +468,58 @@ async def sync_stage_formats(
     return len(rows)
 
 
+async def refresh_league_meta(
+    client: LiquipediaSource,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> int:
+    """Re-read tier, venue, dates and prize pool for leagues already mapped.
+
+    One batched request for every page, so it costs two seconds regardless of how many
+    leagues there are - unlike the stage refresh, which pays 30 seconds per page.
+    """
+    async with session_factory() as session:
+        mapped = list(
+            (
+                await session.execute(
+                    select(League.league_id, League.liquipedia_slug).where(
+                        League.liquipedia_slug.is_not(None)
+                    )
+                )
+            ).all()
+        )
+    if not mapped:
+        return 0
+
+    by_title = {str(slug): int(league_id) for league_id, slug in mapped}
+    facts = await _page_facts(client, list(by_title))
+
+    updated = 0
+    async with session_factory() as session:
+        for title, league_id in by_title.items():
+            _, meta = facts.get(title, ([], None))
+            if meta is None:
+                continue
+            values: dict[str, Any] = {"updated_at": utcnow()}
+            if meta.prize_pool is not None:
+                values["prize_pool"] = meta.prize_pool
+            if meta.start_date:
+                values["start_date"] = meta.start_date
+            if meta.end_date:
+                values["end_date"] = meta.end_date
+            if meta.is_lan is not None:
+                values["is_lan"] = meta.is_lan
+            if len(values) == 1:
+                continue
+            await session.execute(
+                update(League).where(League.league_id == league_id).values(**values)
+            )
+            updated += 1
+        await session.commit()
+
+    log.info("liquipedia.meta_refreshed", leagues=updated)
+    return updated
+
+
 async def _first_match_year(session: AsyncSession) -> dict[int, int]:
     rows = (
         await session.execute(

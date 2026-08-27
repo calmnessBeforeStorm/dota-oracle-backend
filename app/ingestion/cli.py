@@ -18,7 +18,11 @@ from app.core.logging import configure_logging
 from app.db.session import dispose_engine, get_session_factory
 from app.ingestion.clients.liquipedia import LiquipediaClient
 from app.ingestion.clients.opendota import OpenDotaClient
-from app.ingestion.liquipedia.sync import refresh_stages, sync_liquipedia_leagues
+from app.ingestion.liquipedia.sync import (
+    refresh_league_meta,
+    refresh_stages,
+    sync_liquipedia_leagues,
+)
 from app.ingestion.liquipedia.wikitext import parse_stage_formats
 from app.ingestion.normalize import (
     normalize_match_details,
@@ -108,6 +112,12 @@ async def cmd_liquipedia(page: str) -> None:
         flag = "  <- mixed formats, confirm by hand" if stage.is_ambiguous else ""
         print(f"  {stage.default_format.value:<4} {stage.stage_type.value:<8} {stage.name}{flag}")
         print(f"       {stage.evidence[:110]}")
+
+
+async def cmd_refresh_meta() -> None:
+    async with LiquipediaClient() as client:
+        updated = await refresh_league_meta(client, get_session_factory())
+    print(f"leagues updated: {updated}")
 
 
 async def cmd_refresh_stages(limit: int | None) -> None:
@@ -256,6 +266,10 @@ def main() -> None:
         ),
     )
 
+    sub.add_parser(
+        "refresh-meta", help="re-read tier, dates and prize pool of mapped leagues (one request)"
+    )
+
     refresh = sub.add_parser(
         "refresh-stages", help="re-read stages of already mapped leagues (one page per 30s)"
     )
@@ -279,6 +293,8 @@ def main() -> None:
                 await cmd_details(args.limit, args.oldest_first)
             elif args.command == "map-leagues":
                 await cmd_map_leagues(args.limit, args.apply, args.escalate)
+            elif args.command == "refresh-meta":
+                await cmd_refresh_meta()
             elif args.command == "refresh-stages":
                 await cmd_refresh_stages(args.limit)
             elif args.command == "link-stages":
