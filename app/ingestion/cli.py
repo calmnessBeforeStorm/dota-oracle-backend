@@ -7,6 +7,7 @@ scheduler should launch on its own - a stray restart would burn the OpenDota mon
     docker compose exec api python -m app.ingestion.cli details --limit 200
     docker compose exec api python -m app.ingestion.cli normalize
     docker compose exec api python -m app.ingestion.cli link-stages
+    docker compose exec api python -m app.ingestion.cli featurize
     docker compose exec api python -m app.ingestion.cli status
 """
 
@@ -16,6 +17,7 @@ import asyncio
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import dispose_engine, get_session_factory
+from app.features.featurize import featurize
 from app.ingestion.clients.liquipedia import LiquipediaClient
 from app.ingestion.clients.opendota import OpenDotaClient
 from app.ingestion.liquipedia.sync import (
@@ -194,6 +196,19 @@ async def cmd_link_stages() -> None:
             print(f"  {count:>5}  {reason}")
 
 
+async def cmd_featurize(limit: int | None) -> None:
+    """Build match_snapshots from stored match payloads. Touches no network."""
+    report = await featurize(get_session_factory(), limit=limit)
+
+    print(f"matches seen: {report.matches_seen}")
+    print(f"matches used: {report.matches_used}")
+    print(f"snapshots:    {report.snapshots}")
+    if report.skipped:
+        print()
+        for reason, count in sorted(report.skipped.items(), key=lambda kv: -kv[1]):
+            print(f"  {count:>5}  {reason}")
+
+
 async def cmd_status() -> None:
     async with get_session_factory()() as session:
         cursor = await get_checkpoint(session, Checkpoint.OPENDOTA_PRO_MATCHES)
@@ -280,6 +295,9 @@ def main() -> None:
         help="attach series to tournament stages, setting format and series outcome",
     )
 
+    features = sub.add_parser("featurize", help="build match_snapshots from stored parsed matches")
+    features.add_argument("--limit", type=int, default=None, help="stop after N matches")
+
     sub.add_parser("status", help="show checkpoint and raw row counts")
 
     args = parser.parse_args()
@@ -297,6 +315,8 @@ def main() -> None:
                 await cmd_refresh_meta()
             elif args.command == "refresh-stages":
                 await cmd_refresh_stages(args.limit)
+            elif args.command == "featurize":
+                await cmd_featurize(args.limit)
             elif args.command == "link-stages":
                 await cmd_link_stages()
             elif args.command == "liquipedia":

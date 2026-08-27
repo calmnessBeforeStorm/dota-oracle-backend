@@ -25,7 +25,8 @@ FEATURE_ORDER: tuple[str, ...] = (
     "dire_towers",
     # roshan
     "roshan_kills",
-    "aegis_radiant",
+    "aegis_holder",
+    "roshan_respawn_in",
     # fighting
     "kill_diff",
     "net_worth_diff",
@@ -71,9 +72,15 @@ def build_live_features(state: GameState) -> dict[str, float]:
         "radiant_towers": float(state.radiant.tower_count),
         "dire_towers": float(state.dire.tower_count),
         "roshan_kills": float(state.roshan_kills),
-        "aegis_radiant": (
-            0.0 if state.aegis_holder_is_radiant is None else float(state.aegis_holder_is_radiant)
+        # Three states, not two: nobody holds it, dire holds it, radiant holds it. Mapping
+        # "dire holds" and "nobody holds" both to zero would throw away half the signal,
+        # and holding the aegis is worth a teamfight.
+        "aegis_holder": (
+            0.0
+            if state.aegis_holder_is_radiant is None
+            else (1.0 if state.aegis_holder_is_radiant else -1.0)
         ),
+        "roshan_respawn_in": float(state.roshan_respawn_in or 0),
         "kill_diff": float(state.radiant.score - state.dire.score),
         "net_worth_diff": float(state.radiant.net_worth - state.dire.net_worth),
         "radiant_nw_spread": _spread(state.radiant.player_net_worths),
