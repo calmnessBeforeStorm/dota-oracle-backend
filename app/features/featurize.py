@@ -12,6 +12,13 @@ of the live dataset, and two properties of it are not negotiable:
 
 Reads only from `raw_matches` and the normalized tables, never from the network, so it can
 be re-run whenever the feature set changes.
+
+**One source, and only one.** Snapshots are built from STRATZ payloads. OpenDota's
+per-minute series reports *earned gold* while STRATZ reports *net worth*, which is also what
+the live scoreboard the serve path reads reports. Feeding both into this table would put two
+different quantities in the same column and teach the model a source artifact that no metric
+would reveal. The measurements are in
+docs/superpowers/specs/2026-08-27-stratz-adapter-design.md.
 """
 
 from dataclasses import dataclass, field
@@ -26,7 +33,7 @@ from app.db.models.enums import SeriesFormat
 from app.db.models.matches import Match, Series
 from app.db.models.raw import RawMatch
 from app.db.models.training import MatchPrematch, MatchSnapshot
-from app.features.adapters.opendota import is_parsed, iter_snapshots
+from app.features.adapters.stratz import is_parsed, iter_snapshots
 from app.features.game_state import SeriesContext
 from app.features.live import build_live_features
 from app.ingestion.sources import RawSource
@@ -157,7 +164,7 @@ async def featurize(
         async with session_factory() as session:
             statement = (
                 select(RawMatch.payload)
-                .where(RawMatch.source == str(RawSource.OPENDOTA_MATCH))
+                .where(RawMatch.source == str(RawSource.STRATZ_MATCH))
                 .order_by(RawMatch.match_id)
                 .offset(offset)
                 .limit(batch_size if limit is None else min(batch_size, limit - offset))
@@ -185,14 +192,14 @@ async def _featurize_batch(
     usable: list[dict[str, Any]] = []
     for payload in payloads:
         report.matches_seen += 1
-        if payload.get("match_id") is None:
+        if payload.get("id") is None:
             report.skip("no match_id")
         elif not is_parsed(payload):
             # No per-minute series exists for an unparsed match; there is nothing to unroll.
             report.skip("not parsed")
-        elif payload.get("radiant_win") is None:
+        elif payload.get("didRadiantWin") is None:
             report.skip("no outcome to label with")
-        elif int(payload.get("duration") or 0) < MIN_DURATION_SECONDS:
+        elif int(payload.get("durationSeconds") or 0) < MIN_DURATION_SECONDS:
             report.skip("shorter than 12 minutes")
         else:
             usable.append(payload)
@@ -201,15 +208,15 @@ async def _featurize_batch(
         return
 
     async with session_factory() as session:
-        match_ids = [int(p["match_id"]) for p in usable]
+        match_ids = [int(p["id"]) for p in usable]
         contexts = await _contexts_for(session, match_ids)
         prematch = await _prematch_for(session, match_ids)
 
         rows: list[dict[str, Any]] = []
         for payload in usable:
-            match_id = int(payload["match_id"])
+            match_id = int(payload["id"])
             context = contexts.get(match_id, MatchContext())
-            label = bool(payload["radiant_win"])
+            label = bool(payload["didRadiantWin"])
             prematch_features, prior = prematch.get(match_id, ({}, 0.5))
 
             for state in iter_snapshots(
