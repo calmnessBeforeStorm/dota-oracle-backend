@@ -1,0 +1,95 @@
+"""Manual entry point for phase-4 training runs.
+
+Training is a job a human starts and reads the output of, not something the scheduler does
+on its own - a model that promotes itself eventually promotes a regression unnoticed.
+
+    docker compose --profile ml run --rm trainer python -m app.ml.cli train
+    docker compose --profile ml run --rm trainer python -m app.ml.cli models
+"""
+
+import argparse
+import asyncio
+
+from app.core.config import get_settings
+from app.core.logging import configure_logging
+from app.db.session import dispose_engine
+from app.ml.evaluate import format_report
+from app.ml.pipeline import DEFAULT_ROUNDS, train
+from app.ml.registry import list_models
+
+
+async def cmd_train(rounds: int, notes: str) -> None:
+    result = await train(rounds=rounds, notes=notes)
+
+    print(f"version:  {result.version}")
+    print(f"artifact: {result.booster_path}")
+    print(
+        f"train:    {result.card.train_matches} matches / {result.card.train_rows} rows "
+        f"({result.card.train_window[0]} .. {result.card.train_window[-1]})"
+    )
+    print(
+        f"holdout:  {result.card.holdout_matches} matches / {result.card.holdout_rows} rows "
+        f"({result.card.holdout_window[0]} .. {result.card.holdout_window[-1]})"
+    )
+    print()
+    print(format_report(result.evaluation))
+    print()
+
+    if result.card.passes_gate:
+        print("This model may be served. To activate it, set in .env and restart the API:")
+        print(f"    ACTIVE_MODEL_VERSION={result.version}")
+    else:
+        print("Not activated: it did not beat every baseline in every minute bucket.")
+        print("The artifact and its card are on disk for inspection.")
+
+
+async def cmd_models() -> None:
+    cards = list_models(get_settings().model_dir)
+    if not cards:
+        print("no trained models yet")
+        return
+
+    print(f"{'version':<24} {'gate':<8} {'log loss':>9} {'brier':>8} {'ECE':>7}  holdout")
+    for card in cards:
+        gate = "pass" if card.passes_gate else f"FAIL({len(card.gate_failures)})"
+        print(
+            f"{card.version:<24} {gate:<8} {card.holdout_log_loss:>9.4f} "
+            f"{card.holdout_brier:>8.4f} {card.holdout_ece:>7.4f}  "
+            f"{card.holdout_matches} matches"
+        )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="app.ml.cli")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    trainer = sub.add_parser("train", help="train, calibrate, score against the baselines")
+    trainer.add_argument(
+        "--rounds",
+        type=int,
+        default=DEFAULT_ROUNDS,
+        help=f"boosting rounds before early stopping (default: {DEFAULT_ROUNDS})",
+    )
+    trainer.add_argument(
+        "--notes", default="", help="free text stored on the model card, e.g. what changed"
+    )
+
+    sub.add_parser("models", help="list trained models and whether they passed the gate")
+
+    args = parser.parse_args()
+    configure_logging(get_settings().log_level)
+
+    async def run() -> None:
+        try:
+            if args.command == "train":
+                await cmd_train(args.rounds, args.notes)
+            else:
+                await cmd_models()
+        finally:
+            await dispose_engine()
+
+    asyncio.run(run())
+
+
+if __name__ == "__main__":
+    main()

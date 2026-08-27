@@ -29,3 +29,11 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 # is meant to be run inside it - `docker compose exec api python -m pytest`.
 FROM base AS dev
 RUN pip install -e ".[dev]"
+
+
+# ML image: the training pipeline (phase 4). Kept out of `base` on purpose - the API process
+# only ever loads a trained booster, and LightGBM plus scikit-learn have no business in the
+# image that serves requests. Training is run as a script, never from the API
+# (spec section 9.3).
+FROM dev AS ml
+RUN pip install "lightgbm>=4.5" "scikit-learn>=1.6" "numpy>=2.1"
