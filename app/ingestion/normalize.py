@@ -13,6 +13,7 @@ What a `/proMatches` summary can and cannot fill:
            Liquipedia in phase 2 and stay NULL here rather than being guessed
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -24,6 +25,7 @@ from app.core.logging import get_logger
 from app.db.models.matches import Match, MatchDraft, MatchObjective, MatchPlayer, Series
 from app.db.models.raw import RawMatch
 from app.db.models.reference import League, Team
+from app.features.buildings import BASE, BuildingKill, parse_npc_id
 from app.ingestion.repository import utcnow
 from app.ingestion.sources import RawSource
 
@@ -401,27 +403,152 @@ def parse_match_detail(payload: dict[str, Any]) -> dict[str, list[dict[str, Any]
     return {"players": players, "drafts": drafts, "objectives": objectives}
 
 
+#: The building an npc id names, spelled the way OpenDota spells it. `match_objectives.key`
+#: already holds those names, and rendering the id back into one keeps a single vocabulary
+#: in the table instead of two that mean the same thing.
+_SIDE_NAMES = {True: "goodguys", False: "badguys"}
+_FIRST_TOWER = {True: 16, False: 26}
+_FIRST_RAX = {True: 38, False: 44}
+#: Valve numbers radiant 2 and dire 3 in the objectives log, and 0 and 1 in the draft log.
+_OBJECTIVE_TEAM = {True: 2, False: 3}
+
+
+def _building_name(kill: BuildingKill, npc_id: int) -> str:
+    side = _SIDE_NAMES[kill.is_radiant]
+    if kill.kind == "ancient":
+        return f"npc_dota_{side}_fort"
+    if kill.lane == BASE:
+        return f"npc_dota_{side}_tower4"
+    if kill.kind == "tower":
+        tier = (npc_id - _FIRST_TOWER[kill.is_radiant]) // 3 + 1
+        return f"npc_dota_{side}_tower{tier}_{kill.lane}"
+    melee = npc_id - _FIRST_RAX[kill.is_radiant] < 3
+    return f"npc_dota_{side}_{'melee' if melee else 'range'}_rax_{kill.lane}"
+
+
+#: `match_players.lane_role` and `.leaver_status` are integers on OpenDota's scale. STRATZ
+#: names the same things with enum strings, so they are translated rather than stored as
+#: text - the column has one meaning, and two vocabularies in it would be a silent trap for
+#: anything that reads it. A value with no counterpart maps to NULL rather than to a
+#: plausible-looking number (invariant 12).
+_STRATZ_LANE_ROLE = {"SAFE_LANE": 1, "MID_LANE": 2, "OFF_LANE": 3, "JUNGLE": 4}
+_STRATZ_LEAVER_STATUS = {
+    "NONE": 0,
+    "DISCONNECTED": 1,
+    "DISCONNECTED_TOO_LONG": 2,
+    "ABANDONED": 3,
+    "AFK": 4,
+    "NEVER_CONNECTED": 5,
+    "NEVER_CONNECTED_TOO_LONG": 6,
+}
+
+
+def parse_stratz_match_detail(payload: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Split one STRATZ `match(id:)` payload into rows for the normalized tables.
+
+    Same three keys and the same column names as `parse_match_detail`, so both sources land
+    in the same tables through the same upserts.
+
+    Note what is NOT read here, exactly as on the OpenDota side, and for a sharper reason:
+    `seriesId` *is* present in this payload. Series membership is owned by the /proMatches
+    summaries, and writing it from a detail parse would let the weaker source overwrite the
+    stronger one (invariant 11).
+    """
+    match_id = int(payload["id"])
+
+    players = [
+        {
+            "match_id": match_id,
+            "player_slot": int(player["playerSlot"]),
+            "account_id": player.get("steamAccountId"),
+            "hero_id": player.get("heroId"),
+            "is_radiant": bool(player.get("isRadiant")),
+            "lane_role": _STRATZ_LANE_ROLE.get(str(player.get("lane") or "")),
+            "kills": player.get("kills"),
+            "deaths": player.get("deaths"),
+            "assists": player.get("assists"),
+            "last_hits": player.get("numLastHits"),
+            "denies": player.get("numDenies"),
+            "net_worth": player.get("networth"),
+            "gold_per_min": player.get("goldPerMinute"),
+            "xp_per_min": player.get("experiencePerMinute"),
+            "leaver_status": _STRATZ_LEAVER_STATUS.get(str(player.get("leaverStatus") or "")),
+            "is_standin": False,  # needs roster history from Liquipedia (phase 2)
+        }
+        for player in payload.get("players") or []
+        if player.get("playerSlot") is not None
+    ]
+
+    drafts: list[dict[str, Any]] = []
+    for entry in payload.get("pickBans") or []:
+        hero_id = entry.get("heroId") if entry.get("isPick") else entry.get("bannedHeroId")
+        if entry.get("order") is None or hero_id is None:
+            continue
+        drafts.append(
+            {
+                "match_id": match_id,
+                "order": int(entry["order"]),
+                "is_pick": bool(entry["isPick"]),
+                "hero_id": int(hero_id),
+                "team": 0 if entry.get("isRadiant") else 1,
+            }
+        )
+
+    objectives: list[dict[str, Any]] = []
+    for event in payload.get("towerDeaths") or []:
+        npc_id = int(event.get("npcId") or 0)
+        kill = parse_npc_id(npc_id)
+        if kill is None:  # ids 36 and 37 are not buildings we track
+            continue
+        objectives.append(
+            {
+                "match_id": match_id,
+                "ordinal": len(objectives),
+                "time": int(event.get("time", 0)),
+                "type": "building_kill",
+                "team": _OBJECTIVE_TEAM[kill.is_radiant],
+                "key": _building_name(kill, npc_id),
+                "player_slot": None,
+            }
+        )
+
+    return {"players": players, "drafts": drafts, "objectives": objectives}
+
+
+#: How to read a detail payload, by the source it came from. The tuple is
+#: (parser, id field, patch field, "was it parsed" field) - the two providers disagree on
+#: all four. `None` for the patch field means the source cannot supply one: STRATZ numbers
+#: game versions differently, and a number from the wrong scale is worse than a NULL
+#: (invariant 12).
+_DETAIL_PARSERS: dict[
+    str, tuple[Callable[[dict[str, Any]], dict[str, list[dict[str, Any]]]], str, str | None, str]
+] = {
+    str(RawSource.OPENDOTA_MATCH): (parse_match_detail, "match_id", "patch", "version"),
+    str(RawSource.STRATZ_MATCH): (parse_stratz_match_detail, "id", None, "parsedDateTime"),
+}
+
+
 async def normalize_match_details(
     session_factory: async_sessionmaker[AsyncSession],
     batch_size: int = 200,
     limit: int | None = None,
 ) -> NormalizeReport:
-    """Rebuild rosters, drafts and objectives from stored detail payloads."""
+    """Rebuild rosters, drafts and objectives from stored detail payloads, either source."""
     report = NormalizeReport()
     offset = 0
 
     while True:
         async with session_factory() as session:
             statement = (
-                select(RawMatch.payload)
-                .where(RawMatch.source == str(RawSource.OPENDOTA_MATCH))
-                .order_by(RawMatch.match_id)
+                select(RawMatch.source, RawMatch.payload)
+                .where(RawMatch.source.in_(list(_DETAIL_PARSERS)))
+                .order_by(RawMatch.match_id, RawMatch.source)
                 .offset(offset)
                 .limit(batch_size if limit is None else min(batch_size, limit - offset))
             )
-            payloads = list((await session.execute(statement)).scalars().all())
+            rows = list((await session.execute(statement)).all())
 
-        if not payloads:
+        if not rows:
             break
 
         players: list[dict[str, Any]] = []
@@ -429,21 +556,27 @@ async def normalize_match_details(
         objectives: list[dict[str, Any]] = []
         enrichment: list[dict[str, Any]] = []
 
-        for payload in payloads:
-            if payload.get("match_id") is None:
+        for source, payload in rows:
+            parse, id_field, patch_field, parsed_field = _DETAIL_PARSERS[source]
+            if payload.get(id_field) is None:
                 report.skip("no match_id")
                 continue
-            parsed = parse_match_detail(payload)
+            parsed = parse(payload)
             players.extend(parsed["players"])
             drafts.extend(parsed["drafts"])
             objectives.extend(parsed["objectives"])
             enrichment.append(
                 {
-                    "match_id": int(payload["match_id"]),
-                    # Only what the summary could not tell us. Series fields are absent from
-                    # this endpoint and are deliberately not touched.
-                    "patch": payload.get("patch"),
-                    "is_parsed": payload.get("version") is not None,
+                    "match_id": int(payload[id_field]),
+                    # Only what the summary could not tell us. Series fields are present in
+                    # the STRATZ payload and absent from the OpenDota one, and are
+                    # deliberately not touched either way (invariant 11).
+                    #
+                    # `patch` is left NULL for STRATZ on purpose: its `gameVersionId` is a
+                    # different numbering than OpenDota's `patch`, and writing one into a
+                    # column that means the other is worse than not knowing (invariant 12).
+                    "patch": payload.get(patch_field) if patch_field else None,
+                    "is_parsed": payload.get(parsed_field) is not None,
                     "updated_at": utcnow(),
                 }
             )
@@ -461,7 +594,7 @@ async def normalize_match_details(
             await _enrich_matches(session, enrichment)
             await session.commit()
 
-        offset += len(payloads)
+        offset += len(rows)
         report.raw_seen = offset
         log.info("normalize_details.batch", seen=offset)
 
