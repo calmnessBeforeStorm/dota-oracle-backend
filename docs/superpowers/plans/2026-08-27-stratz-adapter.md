@@ -338,7 +338,7 @@ git commit -m "decode STRATZ building npc ids in the shared building decoder"
 - Modify: `CLAUDE.md:49`
 
 **Interfaces:**
-- Produces: `FEATURE_ORDER` длиной 29 вместо 32. Поля `GameState.roshan_kills`, `.aegis_holder_is_radiant`, `.roshan_respawn_in` **остаются** — они сырьё, а не признаки, и OpenDota-адаптер продолжает их заполнять.
+- Produces: `FEATURE_ORDER` длиной 27 вместо 30. Поля `GameState.roshan_kills`, `.aegis_holder_is_radiant`, `.roshan_respawn_in` **остаются** — они сырьё, а не признаки, и OpenDota-адаптер продолжает их заполнять.
 
 Обоснование целиком в спеке. Коротко: `from_live_league_game` передаёт в `GameState` только `roshan_respawn_in`, а `roshan_kills` и `aegis_holder_is_radiant` не передаёт вовсе — они уже сейчас константы на проде. Третий признак live-табло отдаёт, но STRATZ — нет, и держать ради него вызов OpenDota на каждой карте значит не снять блокер.
 
@@ -367,9 +367,9 @@ def test_roshan_features_are_gone() -> None:
     assert set(build_live_features(state)) == set(FEATURE_ORDER)
 
 
-def test_feature_vector_is_29_long() -> None:
-    assert len(FEATURE_ORDER) == 29
-    assert len(set(FEATURE_ORDER)) == 29
+def test_feature_vector_is_27_long() -> None:
+    assert len(FEATURE_ORDER) == 27
+    assert len(set(FEATURE_ORDER)) == 27
 ```
 
 - [ ] **Step 2: Прогнать, убедиться, что падает**
@@ -434,7 +434,8 @@ Expected: PASS. Падений из-за длины вектора быть не
 Ту же правку внести в копию спеки во фронтенд-репозитории и в `dota2-prediction-spec.md`
 в корне рабочей директории — копии обязаны совпадать.
 
-В `CLAUDE.md` строку `В векторе снапшота 32 признака` заменить на `29 признаков`.
+В `CLAUDE.md` строку `В векторе снапшота 32 признака` заменить на `27 признаков`.
+Цифра 32 там была устаревшей: до правки `FEATURE_ORDER` содержал 30 имён.
 
 - [ ] **Step 7: Коммит**
 
@@ -1505,7 +1506,7 @@ asyncio.run(main())
 PY
 ```
 
-Expected: `feature count -> 29`, число матчей в снапшотах равно числу скачанных через
+Expected: `feature count -> 27`, число матчей в снапшотах равно числу скачанных через
 STRATZ разобранных карт, снапшотов заметно больше прежних 23 289.
 
 - [ ] **Step 5: Продолжать фоном**

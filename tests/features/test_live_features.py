@@ -67,3 +67,28 @@ def test_series_context_travels_with_game_number() -> None:
     assert features["game_in_series"] == 2.0
     assert features["series_len"] == 2.0
     assert features["is_conditional_game"] == 0.0
+
+
+class TestRoshanIsGone:
+    """Dropped 27.08.2026 for the same reason xp_adv was: the serve path cannot supply
+    these. `from_live_league_game` never passes `roshan_kills` or `aegis_holder_is_radiant`
+    into the GameState at all, so both were constants in production while training saw real
+    values. `roshan_respawn_in` the live scoreboard does supply, but STRATZ - now the only
+    source of per-minute training data - carries no Roshan events whatsoever.
+    """
+
+    def test_the_three_features_are_not_in_the_vector(self) -> None:
+        for name in ("roshan_kills", "aegis_holder", "roshan_respawn_in"):
+            assert name not in FEATURE_ORDER
+
+    def test_the_builder_ignores_the_raw_fields(self) -> None:
+        """The GameState fields stay - they are raw data, and the OpenDota adapter still
+        fills them. They simply must not reach the vector."""
+        held = make_state(roshan_kills=3, aegis_holder_is_radiant=True, roshan_respawn_in=120)
+        empty = make_state(roshan_kills=0, aegis_holder_is_radiant=None, roshan_respawn_in=None)
+        assert build_live_features(held) == build_live_features(empty)
+
+    def test_the_vector_is_27_long(self) -> None:
+        assert len(FEATURE_ORDER) == 27
+        assert len(set(FEATURE_ORDER)) == 27
+        assert set(build_live_features(make_state())) == set(FEATURE_ORDER)

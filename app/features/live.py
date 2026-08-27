@@ -16,6 +16,14 @@ and disappoints in the live loop, with nothing in the metrics to explain it.
 
 Gold advantage carries most of the same information and both sides supply it exactly, so
 the XP advantage stays on `GameState` as raw data and out of the feature vector.
+
+Roshan went the same way on 27.08.2026, and the first two for a sharper reason than XP:
+`from_live_league_game` never passes `roshan_kills` or `aegis_holder_is_radiant` into the
+GameState at all, so both had been constants in production while training saw real values -
+a skew that had simply gone unnoticed. `roshan_respawn_in` the live scoreboard does supply,
+but STRATZ, now the only source of per-minute training data, carries no Roshan events
+whatsoever: `roshanEvents` comes back empty and its chat log has no such entries, measured
+over 60 matches. All three stay on `GameState` as raw data and out of the feature vector.
 """
 
 import math
@@ -35,10 +43,6 @@ FEATURE_ORDER: tuple[str, ...] = (
     "barracks_diff",
     "radiant_towers",
     "dire_towers",
-    # roshan
-    "roshan_kills",
-    "aegis_holder",
-    "roshan_respawn_in",
     # fighting
     "kill_diff",
     "net_worth_diff",
@@ -101,16 +105,6 @@ def build_live_features(state: GameState) -> dict[str, float]:
         "barracks_diff": float(state.radiant.barracks_count - state.dire.barracks_count),
         "radiant_towers": float(state.radiant.tower_count),
         "dire_towers": float(state.dire.tower_count),
-        "roshan_kills": float(state.roshan_kills),
-        # Three states, not two: nobody holds it, dire holds it, radiant holds it. Mapping
-        # "dire holds" and "nobody holds" both to zero would throw away half the signal,
-        # and holding the aegis is worth a teamfight.
-        "aegis_holder": (
-            0.0
-            if state.aegis_holder_is_radiant is None
-            else (1.0 if state.aegis_holder_is_radiant else -1.0)
-        ),
-        "roshan_respawn_in": float(state.roshan_respawn_in or 0),
         "kill_diff": float(state.radiant.score - state.dire.score),
         "net_worth_diff": float(state.radiant.net_worth - state.dire.net_worth),
         "radiant_nw_spread": _spread(state.radiant.player_net_worths),
