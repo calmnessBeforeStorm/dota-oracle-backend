@@ -5,17 +5,22 @@ the state at the END of the game. Read it into a minute-15 snapshot and the mode
 who won. Every key below is a real one, taken from the objectives logs we hold.
 """
 
+from typing import Any
+
 import pytest
 
 from app.features.buildings import (
     BASE,
     FULL_BARRACKS,
     FULL_TOWERS,
+    BuildingKill,
     apply_kill,
     decode_bitmasks,
     full_base,
     parse_building_key,
+    parse_npc_id,
     state_at,
+    state_at_npc,
 )
 
 
@@ -138,3 +143,91 @@ class TestBitmasks:
         state = decode_bitmasks(1926, 51)
         assert 0 < state.tower_count < 11
         assert 0 < state.barracks_count <= 6
+
+
+class TestParseNpcId:
+    """STRATZ names a destroyed building by npc id. The table was read off STRATZ and
+    OpenDota side by side on real matches, not guessed from the numbering.
+    """
+
+    def test_radiant_tier_one_towers(self) -> None:
+        for npc_id, lane in ((16, "top"), (17, "mid"), (18, "bot")):
+            assert parse_npc_id(npc_id) == BuildingKill(True, "tower", lane)
+
+    def test_radiant_tier_two_and_three_towers(self) -> None:
+        for npc_id, lane in ((19, "top"), (20, "mid"), (21, "bot")):
+            assert parse_npc_id(npc_id) == BuildingKill(True, "tower", lane)
+        for npc_id, lane in ((22, "top"), (23, "mid"), (24, "bot")):
+            assert parse_npc_id(npc_id) == BuildingKill(True, "tower", lane)
+
+    def test_dire_towers(self) -> None:
+        for npc_id, lane in ((26, "top"), (27, "mid"), (28, "bot")):
+            assert parse_npc_id(npc_id) == BuildingKill(False, "tower", lane)
+        for npc_id, lane in ((32, "top"), (33, "mid"), (34, "bot")):
+            assert parse_npc_id(npc_id) == BuildingKill(False, "tower", lane)
+
+    def test_ancient_towers_have_no_lane(self) -> None:
+        assert parse_npc_id(25) == BuildingKill(True, "tower", BASE)
+        assert parse_npc_id(35) == BuildingKill(False, "tower", BASE)
+
+    def test_barracks(self) -> None:
+        assert parse_npc_id(38) == BuildingKill(True, "barracks", "top")
+        assert parse_npc_id(40) == BuildingKill(True, "barracks", "bot")
+        assert parse_npc_id(41) == BuildingKill(True, "barracks", "top")
+        assert parse_npc_id(43) == BuildingKill(True, "barracks", "bot")
+        assert parse_npc_id(44) == BuildingKill(False, "barracks", "top")
+        assert parse_npc_id(49) == BuildingKill(False, "barracks", "bot")
+
+    def test_forts(self) -> None:
+        assert parse_npc_id(50) == BuildingKill(True, "ancient", BASE)
+        assert parse_npc_id(51) == BuildingKill(False, "ancient", BASE)
+
+    def test_every_tracked_building_is_covered_exactly_once(self) -> None:
+        """Eleven towers, six racks and an ancient a side - and 25 and 35 stand for two
+        towers each, so the two ancient towers share one id."""
+        kills = [parse_npc_id(n) for n in range(16, 52)]
+        found = [k for k in kills if k is not None]
+        assert len(found) == 34
+        for radiant in (True, False):
+            side = [k for k in found if k.is_radiant is radiant]
+            assert len([k for k in side if k.kind == "tower"]) == 10
+            assert len([k for k in side if k.kind == "barracks"]) == 6
+            assert len([k for k in side if k.kind == "ancient"]) == 1
+
+    def test_unmapped_ids_are_ignored(self) -> None:
+        """36 and 37 fire several times a match and have no counterpart in OpenDota's
+        objectives log at all. Counting them would destroy buildings that still stand.
+        """
+        assert parse_npc_id(36) is None
+        assert parse_npc_id(37) is None
+        assert parse_npc_id(0) is None
+        assert parse_npc_id(999) is None
+
+
+NPC_DEATHS: list[dict[str, Any]] = [
+    {"time": 400, "npcId": 16, "isRadiant": True},
+    {"time": 800, "npcId": 19, "isRadiant": True},
+    {"time": 900, "npcId": 36, "isRadiant": True},
+    {"time": 1000, "npcId": 26, "isRadiant": False},
+]
+
+
+class TestStateAtNpc:
+    def test_only_events_up_to_the_minute_are_applied(self) -> None:
+        assert state_at_npc(NPC_DEATHS, minute=5, radiant=True).towers["top"] == 3
+        assert state_at_npc(NPC_DEATHS, minute=6, radiant=True).towers["top"] == 2
+        assert state_at_npc(NPC_DEATHS, minute=13, radiant=True).towers["top"] == 1
+
+    def test_the_other_side_is_untouched(self) -> None:
+        assert state_at_npc(NPC_DEATHS, minute=20, radiant=False).towers["top"] == 2
+        assert state_at_npc(NPC_DEATHS, minute=20, radiant=False).tower_count == 10
+
+    def test_unmapped_events_change_nothing(self) -> None:
+        without = [e for e in NPC_DEATHS if e["npcId"] != 36]
+        assert state_at_npc(NPC_DEATHS, 20, True) == state_at_npc(without, 20, True)
+
+    def test_starts_from_a_full_base(self) -> None:
+        state = state_at_npc([], minute=0, radiant=True)
+        assert state.tower_count == 11
+        assert state.barracks_count == 6
+        assert state.ancient_alive

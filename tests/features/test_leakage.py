@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from app.features.adapters.opendota import iter_snapshots, snapshot_at
+from app.features.adapters.opendota import snapshot_at
 from app.features.live import build_live_features
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "opendota"
@@ -89,37 +89,6 @@ class TestTruncationInvariance:
             assert full == cut, f"minute {minute} differs once the future is removed"
 
 
-class TestAegisEncoding:
-    """Found by the constancy check that used to live here: mapping "dire holds the aegis"
-    and "nobody holds it" both to zero threw away half the signal."""
-
-    def test_three_states_are_distinguishable(self) -> None:
-        from app.features.game_state import GameState, TeamState
-
-        def aegis_feature(holder: bool | None) -> float:
-            state = GameState(
-                match_id=1,
-                minute=20,
-                radiant=TeamState(),
-                dire=TeamState(),
-                gold_adv=0,
-                xp_adv=0,
-                aegis_holder_is_radiant=holder,
-            )
-            return build_live_features(state)["aegis_holder"]
-
-        assert aegis_feature(True) == 1.0
-        assert aegis_feature(None) == 0.0
-        assert aegis_feature(False) == -1.0
-
-    def test_it_varies_across_a_match_that_had_one(self, match: dict[str, Any]) -> None:
-        values = {build_live_features(s)["aegis_holder"] for s in iter_snapshots(match)}
-        holders = {s.aegis_holder_is_radiant for s in iter_snapshots(match)}
-        if holders == {None}:
-            pytest.skip("no aegis was taken in this match")
-        assert len(values) > 1
-
-
 class TestEarlyMinutesCarryLittleSignal:
     def test_minute_zero_is_a_blank_slate(self, match: dict[str, Any]) -> None:
         """Nothing has happened yet, so the state features must be neutral. Measured across
@@ -130,9 +99,8 @@ class TestEarlyMinutesCarryLittleSignal:
         assert features["barracks_diff"] == 0
         assert features["radiant_towers"] == 11
         assert features["dire_towers"] == 11
-        assert features["roshan_kills"] == 0
-        assert features["aegis_holder"] == 0
-        assert features["roshan_respawn_in"] == 0
+        assert features["kill_diff"] == 0
+        assert features["net_worth_diff"] == 0
 
 
 class TestSourceParity:

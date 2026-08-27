@@ -1,0 +1,746 @@
+{
+ "id": 8946228107,
+ "didRadiantWin": true,
+ "durationSeconds": 1102,
+ "startDateTime": 1786764957,
+ "endDateTime": 1786766059,
+ "parsedDateTime": 1786767188,
+ "leagueId": 19719,
+ "radiantTeamId": 9823272,
+ "direTeamId": 5017210,
+ "gameVersionId": 182,
+ "radiantNetworthLeads": [
+  0,
+  0,
+  -438,
+  8,
+  227,
+  640,
+  1757,
+  1796,
+  1908,
+  2915,
+  3820,
+  4132,
+  4751,
+  6621,
+  6645,
+  7159,
+  7945,
+  8470,
+  9542,
+  10920
+ ],
+ "radiantExperienceLeads": [
+  0,
+  0,
+  30,
+  440,
+  188,
+  51,
+  965,
+  1019,
+  947,
+  2317,
+  2723,
+  3135,
+  4457,
+  6274,
+  6180,
+  7237,
+  10010,
+  11006,
+  12662,
+  14867
+ ],
+ "pickBans": [
+  {
+   "isPick": false,
+   "heroId": 33,
+   "bannedHeroId": 33,
+   "isRadiant": false,
+   "order": 0
+  },
+  {
+   "isPick": false,
+   "heroId": 55,
+   "bannedHeroId": 55,
+   "isRadiant": false,
+   "order": 1
+  },
+  {
+   "isPick": false,
+   "heroId": 83,
+   "bannedHeroId": 83,
+   "isRadiant": true,
+   "order": 2
+  },
+  {
+   "isPick": false,
+   "heroId": 6,
+   "bannedHeroId": 6,
+   "isRadiant": true,
+   "order": 3
+  },
+  {
+   "isPick": false,
+   "heroId": 112,
+   "bannedHeroId": 112,
+   "isRadiant": false,
+   "order": 4
+  },
+  {
+   "isPick": false,
+   "heroId": 11,
+   "bannedHeroId": 11,
+   "isRadiant": true,
+   "order": 5
+  },
+  {
+   "isPick": false,
+   "heroId": 107,
+   "bannedHeroId": 107,
+   "isRadiant": true,
+   "order": 6
+  },
+  {
+   "isPick": true,
+   "heroId": 74,
+   "bannedHeroId": null,
+   "isRadiant": false,
+   "order": 7
+  },
+  {
+   "isPick": true,
+   "heroId": 13,
+   "bannedHeroId": null,
+   "isRadiant": true,
+   "order": 8
+  },
+  {
+   "isPick": false,
+   "heroId": 90,
+   "bannedHeroId": 90,
+   "isRadiant": false,
+   "order": 9
+  },
+  {
+   "isPick": false,
+   "heroId": 85,
+   "bannedHeroId": 85,
+   "isRadiant": false,
+   "order": 10
+  },
+  {
+   "isPick": false,
+   "heroId": 3,
+   "bannedHeroId": 3,
+   "isRadiant": true,
+   "order": 11
+  },
+  {
+   "isPick": true,
+   "heroId": 9,
+   "bannedHeroId": null,
+   "isRadiant": true,
+   "order": 12
+  },
+  {
+   "isPick": true,
+   "heroId": 96,
+   "bannedHeroId": null,
+   "isRadiant": false,
+   "order": 13
+  },
+  {
+   "isPick": true,
+   "heroId": 105,
+   "bannedHeroId": null,
+   "isRadiant": false,
+   "order": 14
+  },
+  {
+   "isPick": true,
+   "heroId": 145,
+   "bannedHeroId": null,
+   "isRadiant": true,
+   "order": 15
+  },
+  {
+   "isPick": true,
+   "heroId": 30,
+   "bannedHeroId": null,
+   "isRadiant": true,
+   "order": 16
+  },
+  {
+   "isPick": true,
+   "heroId": 19,
+   "bannedHeroId": null,
+   "isRadiant": false,
+   "order": 17
+  },
+  {
+   "isPick": false,
+   "heroId": 28,
+   "bannedHeroId": 28,
+   "isRadiant": false,
+   "order": 18
+  },
+  {
+   "isPick": false,
+   "heroId": 123,
+   "bannedHeroId": 123,
+   "isRadiant": true,
+   "order": 19
+  },
+  {
+   "isPick": false,
+   "heroId": 108,
+   "bannedHeroId": 108,
+   "isRadiant": false,
+   "order": 20
+  },
+  {
+   "isPick": false,
+   "heroId": 131,
+   "bannedHeroId": 131,
+   "isRadiant": true,
+   "order": 21
+  },
+  {
+   "isPick": true,
+   "heroId": 27,
+   "bannedHeroId": null,
+   "isRadiant": false,
+   "order": 22
+  },
+  {
+   "isPick": true,
+   "heroId": 98,
+   "bannedHeroId": null,
+   "isRadiant": true,
+   "order": 23
+  }
+ ],
+ "players": [
+  {
+   "steamAccountId": 171262902,
+   "heroId": 145,
+   "isRadiant": true,
+   "playerSlot": 0,
+   "kills": 6,
+   "deaths": 1,
+   "assists": 4,
+   "numLastHits": 196,
+   "numDenies": 21,
+   "networth": 12104,
+   "goldPerMinute": 647,
+   "experiencePerMinute": 645,
+   "leaverStatus": "DISCONNECTED",
+   "lane": "SAFE_LANE",
+   "stats": {
+    "networthPerMinute": [
+     600,
+     776,
+     1102,
+     1438,
+     1655,
+     2131,
+     2577,
+     2940,
+     3581,
+     4287,
+     4754,
+     5299,
+     6070,
+     6513,
+     7431,
+     8343,
+     9501,
+     10454,
+     11840
+    ],
+    "killEvents": [
+     {
+      "time": 439
+     },
+     {
+      "time": 500
+     },
+     {
+      "time": 564
+     },
+     {
+      "time": 880
+     },
+     {
+      "time": 911
+     },
+     {
+      "time": 1092
+     }
+    ]
+   }
+  },
+  {
+   "steamAccountId": 312436974,
+   "heroId": 13,
+   "isRadiant": true,
+   "playerSlot": 1,
+   "kills": 2,
+   "deaths": 0,
+   "assists": 4,
+   "numLastHits": 158,
+   "numDenies": 10,
+   "networth": 9213,
+   "goldPerMinute": 503,
+   "experiencePerMinute": 617,
+   "leaverStatus": "NONE",
+   "lane": "MID_LANE",
+   "stats": {
+    "networthPerMinute": [
+     600,
+     802,
+     1155,
+     1637,
+     1818,
+     2169,
+     2542,
+     2925,
+     3282,
+     3584,
+     3904,
+     4436,
+     5149,
+     5796,
+     6332,
+     6903,
+     7756,
+     8088,
+     8820
+    ],
+    "killEvents": [
+     {
+      "time": 691
+     },
+     {
+      "time": 1083
+     }
+    ]
+   }
+  },
+  {
+   "steamAccountId": 56351509,
+   "heroId": 98,
+   "isRadiant": true,
+   "playerSlot": 2,
+   "kills": 6,
+   "deaths": 0,
+   "assists": 3,
+   "numLastHits": 178,
+   "numDenies": 14,
+   "networth": 11101,
+   "goldPerMinute": 604,
+   "experiencePerMinute": 671,
+   "leaverStatus": "NONE",
+   "lane": "OFF_LANE",
+   "stats": {
+    "networthPerMinute": [
+     600,
+     811,
+     996,
+     1170,
+     1433,
+     1919,
+     2311,
+     2737,
+     3313,
+     3751,
+     4314,
+     4841,
+     5646,
+     6721,
+     7353,
+     7956,
+     8830,
+     9903,
+     10716
+    ],
+    "killEvents": [
+     {
+      "time": 461
+     },
+     {
+      "time": 557
+     },
+     {
+      "time": 784
+     },
+     {
+      "time": 957
+     },
+     {
+      "time": 1007
+     },
+     {
+      "time": 1092
+     }
+    ]
+   }
+  },
+  {
+   "steamAccountId": 93817671,
+   "heroId": 30,
+   "isRadiant": true,
+   "playerSlot": 3,
+   "kills": 5,
+   "deaths": 2,
+   "assists": 10,
+   "numLastHits": 10,
+   "numDenies": 4,
+   "networth": 4524,
+   "goldPerMinute": 267,
+   "experiencePerMinute": 437,
+   "leaverStatus": "NONE",
+   "lane": "SAFE_LANE",
+   "stats": {
+    "networthPerMinute": [
+     550,
+     631,
+     721,
+     805,
+     1166,
+     1376,
+     1442,
+     1657,
+     1720,
+     1974,
+     2086,
+     2484,
+     2703,
+     2927,
+     2980,
+     3095,
+     3396,
+     3965,
+     4349
+    ],
+    "killEvents": [
+     {
+      "time": 230
+     },
+     {
+      "time": 276
+     },
+     {
+      "time": 368
+     },
+     {
+      "time": 607
+     },
+     {
+      "time": 980
+     }
+    ]
+   }
+  },
+  {
+   "steamAccountId": 103735745,
+   "heroId": 9,
+   "isRadiant": true,
+   "playerSlot": 4,
+   "kills": 2,
+   "deaths": 2,
+   "assists": 8,
+   "numLastHits": 23,
+   "numDenies": 0,
+   "networth": 3847,
+   "goldPerMinute": 244,
+   "experiencePerMinute": 362,
+   "leaverStatus": "NONE",
+   "lane": "OFF_LANE",
+   "stats": {
+    "networthPerMinute": [
+     600,
+     651,
+     729,
+     679,
+     703,
+     889,
+     979,
+     1068,
+     1222,
+     1428,
+     1543,
+     1726,
+     2343,
+     2394,
+     2608,
+     2912,
+     3075,
+     3361,
+     3751
+    ],
+    "killEvents": [
+     {
+      "time": 284
+     },
+     {
+      "time": 872
+     }
+    ]
+   }
+  },
+  {
+   "steamAccountId": 170896543,
+   "heroId": 19,
+   "isRadiant": false,
+   "playerSlot": 128,
+   "kills": 0,
+   "deaths": 6,
+   "assists": 0,
+   "numLastHits": 143,
+   "numDenies": 7,
+   "networth": 6900,
+   "goldPerMinute": 384,
+   "experiencePerMinute": 424,
+   "leaverStatus": "NONE",
+   "lane": "SAFE_LANE",
+   "stats": {
+    "networthPerMinute": [
+     600,
+     811,
+     1036,
+     1326,
+     1527,
+     1765,
+     2067,
+     2336,
+     2568,
+     3026,
+     3237,
+     3326,
+     3788,
+     4351,
+     4918,
+     5220,
+     5853,
+     6314,
+     7041
+    ],
+    "killEvents": []
+   }
+  },
+  {
+   "steamAccountId": 315272623,
+   "heroId": 74,
+   "isRadiant": false,
+   "playerSlot": 129,
+   "kills": 1,
+   "deaths": 1,
+   "assists": 2,
+   "numLastHits": 124,
+   "numDenies": 9,
+   "networth": 7680,
+   "goldPerMinute": 430,
+   "experiencePerMinute": 449,
+   "leaverStatus": "NONE",
+   "lane": "MID_LANE",
+   "stats": {
+    "networthPerMinute": [
+     600,
+     943,
+     1262,
+     1399,
+     1540,
+     1568,
+     1872,
+     2147,
+     2424,
+     2634,
+     3003,
+     3771,
+     4172,
+     4826,
+     5283,
+     5824,
+     6457,
+     7177,
+     7882
+    ],
+    "killEvents": [
+     {
+      "time": 629
+     }
+    ]
+   }
+  },
+  {
+   "steamAccountId": 145957968,
+   "heroId": 96,
+   "isRadiant": false,
+   "playerSlot": 130,
+   "kills": 0,
+   "deaths": 4,
+   "assists": 2,
+   "numLastHits": 124,
+   "numDenies": 1,
+   "networth": 6974,
+   "goldPerMinute": 369,
+   "experiencePerMinute": 429,
+   "leaverStatus": "NONE",
+   "lane": "OFF_LANE",
+   "stats": {
+    "networthPerMinute": [
+     600,
+     894,
+     962,
+     1246,
+     1543,
+     1632,
+     1861,
+     2238,
+     2328,
+     2487,
+     3072,
+     3361,
+     3628,
+     4134,
+     4458,
+     5291,
+     6180,
+     6454,
+     6915
+    ],
+    "killEvents": []
+   }
+  },
+  {
+   "steamAccountId": 150961567,
+   "heroId": 27,
+   "isRadiant": false,
+   "playerSlot": 131,
+   "kills": 2,
+   "deaths": 7,
+   "assists": 2,
+   "numLastHits": 9,
+   "numDenies": 6,
+   "networth": 2917,
+   "goldPerMinute": 178,
+   "experiencePerMinute": 227,
+   "leaverStatus": "NONE",
+   "lane": "OFF_LANE",
+   "stats": {
+    "networthPerMinute": [
+     600,
+     761,
+     835,
+     934,
+     936,
+     1163,
+     1501,
+     1606,
+     1636,
+     1626,
+     1686,
+     1896,
+     2032,
+     2377,
+     2413,
+     2398,
+     2670,
+     2805,
+     2932
+    ],
+    "killEvents": [
+     {
+      "time": 275
+     },
+     {
+      "time": 331
+     }
+    ]
+   }
+  },
+  {
+   "steamAccountId": 249835593,
+   "heroId": 105,
+   "isRadiant": false,
+   "playerSlot": 132,
+   "kills": 2,
+   "deaths": 4,
+   "assists": 0,
+   "numLastHits": 35,
+   "numDenies": 0,
+   "networth": 3905,
+   "goldPerMinute": 264,
+   "experiencePerMinute": 256,
+   "leaverStatus": "NONE",
+   "lane": "SAFE_LANE",
+   "stats": {
+    "networthPerMinute": [
+     550,
+     700,
+     600,
+     597,
+     589,
+     599,
+     754,
+     1092,
+     1247,
+     1431,
+     1471,
+     1681,
+     1670,
+     2018,
+     2473,
+     2531,
+     2928,
+     3479,
+     3786
+    ],
+    "killEvents": [
+     {
+      "time": 401
+     },
+     {
+      "time": 825
+     }
+    ]
+   }
+  }
+ ],
+ "towerDeaths": [
+  {
+   "time": 698,
+   "npcId": 27,
+   "isRadiant": false
+  },
+  {
+   "time": 930,
+   "npcId": 17,
+   "isRadiant": true
+  },
+  {
+   "time": 946,
+   "npcId": 26,
+   "isRadiant": false
+  },
+  {
+   "time": 977,
+   "npcId": 18,
+   "isRadiant": true
+  },
+  {
+   "time": 1048,
+   "npcId": 28,
+   "isRadiant": false
+  },
+  {
+   "time": 1102,
+   "npcId": 51,
+   "isRadiant": false
+  }
+ ]
+}

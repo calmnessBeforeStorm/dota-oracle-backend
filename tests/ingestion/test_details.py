@@ -12,9 +12,13 @@ from app.ingestion.normalize import (
     normalize_pro_matches,
     parse_match_detail,
 )
-from app.ingestion.repository import upsert_raw_matches
+from app.ingestion.repository import count_raw_matches, match_id_of, upsert_raw_matches
 from app.ingestion.sources import RawSource
-from app.ingestion.workers.details import count_missing_details, run_details_backfill
+from app.ingestion.workers.details import (
+    count_missing_details,
+    run_details_backfill,
+    select_matches_missing_details,
+)
 from tests.ingestion.test_normalize import summary
 
 
@@ -70,6 +74,24 @@ class FakeOpenDota:
         if match_id in self.fail_on:
             raise RuntimeError("upstream exploded")
         return detail(match_id)
+
+
+class FakeStratz:
+    """Shaped after a real STRATZ `match(id:)` response, trimmed to what is stored."""
+
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    async def match(self, match_id: int) -> dict[str, Any]:
+        self.calls.append(match_id)
+        return {
+            "id": match_id,
+            "didRadiantWin": True,
+            "durationSeconds": 1800,
+            "parsedDateTime": 1787702910,
+            "players": [],
+            "towerDeaths": [],
+        }
 
 
 class TestParsing:
@@ -318,3 +340,87 @@ class TestRateLimiting:
         assert report.fetched == 0
         assert len(client.calls) == 20  # the give-up limit, not all forty
         assert report.stopped_because == "upstream failing every request"
+
+
+class TestPerSourceBookkeeping:
+    """A map fetched from OpenDota is still missing from STRATZ, and the other way round.
+    One shared counter would report the backfill as finished with half of it unrun.
+    """
+
+    async def _seed(self, session: AsyncSession, sessionmaker: Any, count: int) -> None:
+        await upsert_raw_matches(
+            session,
+            RawSource.OPENDOTA_PRO_MATCHES,
+            [summary(i, offset_seconds=i * 60) for i in range(1, count + 1)],
+        )
+        await session.commit()
+        await normalize_pro_matches(sessionmaker)
+
+    async def test_missing_details_are_counted_per_source(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await self._seed(session, sessionmaker, 3)
+
+        await run_details_backfill(
+            FakeOpenDota(), sessionmaker, limit=2, source=RawSource.OPENDOTA_MATCH
+        )
+
+        async with sessionmaker() as check:
+            assert await count_missing_details(check, RawSource.OPENDOTA_MATCH) == 1
+            assert await count_missing_details(check, RawSource.STRATZ_MATCH) == 3
+            assert len(await select_matches_missing_details(check, 10)) == 1
+            assert (
+                len(await select_matches_missing_details(check, 10, source=RawSource.STRATZ_MATCH))
+                == 3
+            )
+
+    async def test_backfill_writes_under_the_requested_source(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The fake speaks STRATZ, not OpenDota. That matters: STRATZ calls the map's id
+        `id`, and a raw-layer writer that only knows `match_id` would drop every payload
+        without a word.
+        """
+        await self._seed(session, sessionmaker, 2)
+
+        report = await run_details_backfill(
+            FakeStratz(), sessionmaker, limit=10, source=RawSource.STRATZ_MATCH
+        )
+
+        assert report.fetched == 2
+        async with sessionmaker() as check:
+            assert await count_raw_matches(check, RawSource.STRATZ_MATCH) == 2
+            assert await count_raw_matches(check, RawSource.OPENDOTA_MATCH) == 0
+
+    async def test_the_default_source_is_unchanged(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Existing callers must keep meaning what they meant; the switch is explicit."""
+        await self._seed(session, sessionmaker, 1)
+
+        await run_details_backfill(FakeOpenDota(), sessionmaker, limit=10)
+
+        async with sessionmaker() as check:
+            assert await count_raw_matches(check, RawSource.OPENDOTA_MATCH) == 1
+
+
+class TestRawIdentity:
+    """The raw layer is keyed on (match_id, source), and the two providers do not agree on
+    what the id field is called. This is where that gets reconciled.
+    """
+
+    def test_match_id_is_read_from_either_provider(self) -> None:
+        assert match_id_of({"match_id": 7}) == 7
+        assert match_id_of({"id": 7}) == 7
+        assert match_id_of({"match_id": None, "id": 7}) == 7
+
+    def test_a_payload_with_no_id_is_reported_rather_than_guessed(self) -> None:
+        assert match_id_of({"durationSeconds": 1800}) is None
+
+    async def test_a_stratz_payload_lands_in_the_raw_layer(self, session: AsyncSession) -> None:
+        written = await upsert_raw_matches(
+            session, RawSource.STRATZ_MATCH, [{"id": 99, "durationSeconds": 1800}]
+        )
+        await session.commit()
+        assert written == 1
+        assert await count_raw_matches(session, RawSource.STRATZ_MATCH) == 1

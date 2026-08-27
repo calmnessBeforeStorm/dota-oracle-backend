@@ -23,6 +23,20 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def match_id_of(payload: dict[str, Any]) -> int | None:
+    """The map's id, whichever provider produced the payload.
+
+    OpenDota calls it `match_id`, STRATZ calls it `id`. `raw_matches` is keyed on
+    (match_id, source), so a payload whose id cannot be found has nowhere to go and is
+    dropped by the caller rather than stored under a wrong key.
+    """
+    for field in ("match_id", "id"):
+        value = payload.get(field)
+        if value is not None:
+            return int(value)
+    return None
+
+
 async def upsert_raw_matches(
     session: AsyncSession,
     source: RawSource,
@@ -36,13 +50,13 @@ async def upsert_raw_matches(
     """
     rows = [
         {
-            "match_id": int(payload["match_id"]),
+            "match_id": match_id,
             "source": str(source),
             "fetched_at": fetched_at or utcnow(),
             "payload": payload,
         }
-        for payload in payloads
-        if payload.get("match_id") is not None
+        for payload, match_id in ((p, match_id_of(p)) for p in payloads)
+        if match_id is not None
     ]
     if not rows:
         return 0
