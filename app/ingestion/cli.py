@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import dispose_engine, get_session_factory
 from app.features.featurize import featurize
+from app.features.ratings import rebuild_player_ratings
 from app.ingestion.clients.liquipedia import LiquipediaClient
 from app.ingestion.clients.opendota import OpenDotaClient
 from app.ingestion.liquipedia.sync import (
@@ -209,6 +210,19 @@ async def cmd_featurize(limit: int | None) -> None:
             print(f"  {count:>5}  {reason}")
 
 
+async def cmd_ratings() -> None:
+    """Rebuild point-in-time player ratings. Touches no network."""
+    report = await rebuild_player_ratings(get_session_factory())
+
+    print(f"matches processed: {report.matches_processed}")
+    print(f"ratings written:   {report.ratings_written}")
+    print(f"players rated:     {report.players}")
+    if report.skipped:
+        print()
+        for reason, count in sorted(report.skipped.items(), key=lambda kv: -kv[1]):
+            print(f"  {count:>5}  {reason}")
+
+
 async def cmd_status() -> None:
     async with get_session_factory()() as session:
         cursor = await get_checkpoint(session, Checkpoint.OPENDOTA_PRO_MATCHES)
@@ -298,6 +312,8 @@ def main() -> None:
     features = sub.add_parser("featurize", help="build match_snapshots from stored parsed matches")
     features.add_argument("--limit", type=int, default=None, help="stop after N matches")
 
+    sub.add_parser("ratings", help="rebuild point-in-time player ratings from every stored match")
+
     sub.add_parser("status", help="show checkpoint and raw row counts")
 
     args = parser.parse_args()
@@ -315,6 +331,8 @@ def main() -> None:
                 await cmd_refresh_meta()
             elif args.command == "refresh-stages":
                 await cmd_refresh_stages(args.limit)
+            elif args.command == "ratings":
+                await cmd_ratings()
             elif args.command == "featurize":
                 await cmd_featurize(args.limit)
             elif args.command == "link-stages":

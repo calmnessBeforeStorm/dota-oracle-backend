@@ -18,6 +18,9 @@ dependencies = [
     "arq>=0.26",
     "structlog>=24.4",
     "orjson>=3.10",
+    # Player ratings with uncertainty (spec section 6.2). Small, pure Python; the sigma is
+    # a feature, which is why Elo is not enough.
+    "trueskill>=0.4.5",
 ]
 
 [project.optional-dependencies]
