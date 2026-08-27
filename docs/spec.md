@@ -142,18 +142,27 @@
 
 **База:** `https://api.stratz.com/graphql`, авторизация Bearer-токеном (бесплатный после логина на stratz.com).
 
-**Зачем нужен при наличии OpenDota:** один GraphQL-запрос вытаскивает до сотни матчей со всеми игроками сразу, тогда как OpenDota тратит один вызов на матч. Для первичного бэкфилла это экономит квоту в десятки раз.
+**Роль (пересмотрена 27.08.2026): основной источник поминутных рядов**, а не ускоритель бэкфилла. Две причины, обе измерены — подробности в `docs/superpowers/specs/2026-08-27-stratz-adapter-design.md`:
+
+1. **Лимит.** У OpenDota первым бьёт суточный лимит (~700 карт), у STRATZ — часовой (~2000 запросов). Те же 700 карт занимают минуты, а не сутки.
+2. **Величина.** Поминутный ряд OpenDota (`gold_t`, `radiant_gold_adv`) — это **накопленное добытое золото**. Ряд STRATZ (`networthPerMinute`, `radiantNetworthLeads`) — это **net worth**, ровно то, что отдаёт live-табло `GetLiveLeagueGames`. Обучение на OpenDota означало train/serve skew на самом сильном признаке.
 
 Полезные корневые запросы:
-- `league(id:)` → `matches(request: {take, skip})` — все матчи турнира пачкой
-- `match(id:)` — детали одного матча
+- `match(id:)` — детали одного матча, **основной рабочий запрос**
+- `league(id:)` → `matches(request: {take, skip})` — матчи турнира пачкой
 - `team(teamId:)` → `matches`, `members`
 - `player(steamAccountId:)` → история, герои
 - `live` — идущие матчи (резервный канал для §2.4)
 
-Типовой набор полей: `id`, `didRadiantWin`, `durationSeconds`, `startDateTime`, `radiantTeam{id,name}`, `direTeam{id,name}`, `players{steamAccountId, heroId, isRadiant, kills, deaths, assists, networth, position}`, `pickBans`.
+Набор полей, из которого строятся снапшоты: `id`, `didRadiantWin`, `durationSeconds`, `parsedDateTime`, `radiantNetworthLeads`, `radiantExperienceLeads`, `players{steamAccountId, heroId, isRadiant, playerSlot, kills, networth, stats{networthPerMinute, killEvents{time}}}`, `towerDeaths{time, npcId, isRadiant}`, `pickBans`.
 
-**Разделение ролей:** STRATZ даёт «скелет» истории быстро и дёшево. Поминутные ряды `radiant_gold_adv` в удобном виде есть только у OpenDota — их добираем адресно по матчам, попавшим в обучающую выборку.
+**Три ограничения, проверенные на живом API** — спека до 27.08.2026 предполагала обратное:
+
+- **`matches(ids:)` требует админского токена** («User is not an admin»), поэтому обещанной выборки пачками нет: матчи качаются поштучно.
+- **`playbackData` на бесплатном токене пуст.** И `buildingEvents`, и `roshanEvents` приходят пустыми массивами. Строения поэтому читаются из `towerDeaths` по таблице `npcId`.
+- **Рошана и аегиса в STRATZ нет вовсе.** `roshanEvents` пуст, в `chatEvents` таких событий не нашлось (сопоставление 60 матчей — уровень случайности). Это и вывело три рошановских признака из вектора (§6.1).
+
+**Разделение ролей:** поминутные ряды и строения — из STRATZ. OpenDota остаётся источником сводок `/proMatches`: принадлежность карты к серии знает только он (§4.2), и она не перезаписывается разбором деталей.
 
 ---
 
