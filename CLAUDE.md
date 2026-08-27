@@ -164,10 +164,14 @@ Liquipedia банит по IP: кастомный `User-Agent` с контакт
 ```bash
 cp .env.example .env            # STEAM_API_KEY нужен для live-контура
 docker compose up               # postgres + redis + api + worker
-curl localhost:8000/api/health
+curl localhost:8100/api/health   # порты нестандартные: 8100 / 5442 / 6389
+
+# Тесты гонять в контейнере: там Python 3.12, asyncpg и живой Postgres, поэтому
+# тесты с БД реально выполняются, а не скипаются.
+docker compose exec api python -m pytest
 
 pip install -e ".[dev]"         # локально, Python 3.12
-pytest                          # тесты
+pytest                          # тесты (те, что с БД, скипнутся без неё)
 ruff check . && ruff format .   # линт
 mypy app                        # типы (strict)
 
@@ -187,7 +191,7 @@ docker compose exec api python -m app.ingestion.cli status
 отката гоняет CI на заведомо пустой базе; локально достаточно `upgrade head`. Если откат
 действительно нужен — откатывать на одну ревизию (`alembic downgrade -1`), а не до нуля.
 
-Docs API: `http://localhost:8000/docs`.
+Docs API: `http://localhost:8100/docs`.
 
 ## Правила ведения репозитория
 

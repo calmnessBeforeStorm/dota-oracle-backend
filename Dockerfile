@@ -22,3 +22,10 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS http://localhost:8000/api/health || exit 1
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+
+# Dev image: same thing plus the test and lint toolchain. Database-backed tests need a real
+# Postgres and a Python with asyncpg, which is exactly what this container has, so the suite
+# is meant to be run inside it - `docker compose exec api python -m pytest`.
+FROM base AS dev
+RUN pip install -e ".[dev]"

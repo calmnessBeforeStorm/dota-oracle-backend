@@ -18,7 +18,9 @@ jobs:
           POSTGRES_USER: dota
           POSTGRES_PASSWORD: dota
         ports:
-          - 5432:5432
+          # Published on the same port the app settings default to, so no env override
+          # is needed here. The stock 5432 is deliberately avoided project-wide.
+          - 5442:5432
         options: >-
           --health-cmd "pg_isready -U dota"
           --health-interval 5s

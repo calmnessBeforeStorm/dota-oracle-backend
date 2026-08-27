@@ -11,11 +11,11 @@ FastAPI · PostgreSQL 16 · Redis 7 · arq · LightGBM.
 ```bash
 cp .env.example .env
 docker compose up
-curl localhost:8000/api/health
+curl localhost:8100/api/health
 ```
 
 Поднимаются `postgres`, `redis`, `api` (uvicorn с автоперезагрузкой) и `worker` (arq).
-Swagger — `http://localhost:8000/docs`.
+Swagger — `http://localhost:8100/docs`.
 
 ### Локально, без Docker
 

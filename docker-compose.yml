@@ -8,9 +8,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-dota}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dota}
     ports:
-      # Published only so you can reach the DB from the host (psql, DBeaver).
-      # Override in .env if the port is already taken on your machine.
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
+      # Host side only. Inside the compose network the services always talk on the stock
+      # ports; these are moved off the defaults because 5432/6379/8000 are commonly taken.
+      - "${POSTGRES_PORT:-5442}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -22,9 +22,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      # Same as postgres: the app talks to redis over the compose network,
-      # this mapping exists for redis-cli from the host.
-      - "${REDIS_HOST_PORT:-6379}:6379"
+      - "${REDIS_PORT:-6389}:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -34,13 +32,17 @@ services:
       retries: 10
 
   api:
-    build: .
+    build:
+      context: .
+      target: dev
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
       REDIS_HOST: redis
+      REDIS_PORT: 6379
     ports:
-      - "${API_HOST_PORT:-8000}:8000"
+      - "${API_PORT:-8100}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -57,11 +59,15 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   worker:
-    build: .
+    build:
+      context: .
+      target: dev
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
       REDIS_HOST: redis
+      REDIS_PORT: 6379
     depends_on:
       postgres:
         condition: service_healthy

@@ -10,23 +10,25 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
+    # App. Ports default to the host-side values; docker compose overrides the DB and
+    # Redis ones with the in-network 5432/6379.
     # App
     app_env: Literal["local", "development", "production"] = "local"
     log_level: str = "INFO"
     api_host: str = "0.0.0.0"
-    api_port: int = 8000
-    cors_origins: str = "http://localhost:5173"
+    api_port: int = 8100
+    cors_origins: str = "http://localhost:5273"
 
     # PostgreSQL
     postgres_host: str = "localhost"
-    postgres_port: int = 5432
+    postgres_port: int = 5442
     postgres_db: str = "dota_oracle"
     postgres_user: str = "dota"
     postgres_password: str = "dota"
 
     # Redis
     redis_host: str = "localhost"
-    redis_port: int = 6379
+    redis_port: int = 6389
     redis_db: int = 0
 
     # External sources (spec section 2)
