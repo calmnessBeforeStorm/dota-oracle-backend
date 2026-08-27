@@ -32,6 +32,7 @@ from app.ingestion.normalize import (
     normalize_pro_matches,
     normalized_counts,
 )
+from app.ingestion.reference import refresh_heroes, refresh_pro_players
 from app.ingestion.repository import count_raw_matches, get_checkpoint
 from app.ingestion.sources import Checkpoint, RawSource
 from app.ingestion.stages import link_series_to_stages
@@ -84,6 +85,20 @@ async def cmd_details(limit: int, oldest_first: bool, source: str) -> None:
     if report.remaining:
         rate = DETAIL_FETCH_PER_MINUTE[source]
         print(f"           (~{report.remaining / rate / 60:.1f} h at ~{rate} maps/min)")
+
+
+async def cmd_reference() -> None:
+    """Load heroes and pro players. Two calls, and both change a few times a year.
+
+    Without them `match_drafts` and `match_players` are just numbers, which is why the match
+    card (F2) needs this run before it shows anything a human can read.
+    """
+    async with OpenDotaClient() as client:
+        heroes = await refresh_heroes(client, get_session_factory())
+        players = await refresh_pro_players(client, get_session_factory())
+
+    print(f"heroes:     {heroes}")
+    print(f"pro players: {players}")
 
 
 async def cmd_normalize(limit: int | None) -> None:
@@ -357,6 +372,8 @@ def main() -> None:
         help="rebuild pre-match features and player ratings from every stored match",
     )
 
+    sub.add_parser("reference", help="load hero constants and pro-player names (two calls)")
+
     sub.add_parser("status", help="show checkpoint and raw row counts")
 
     args = parser.parse_args()
@@ -382,6 +399,8 @@ def main() -> None:
                 await cmd_link_stages()
             elif args.command == "liquipedia":
                 await cmd_liquipedia(args.page)
+            elif args.command == "reference":
+                await cmd_reference()
             elif args.command == "normalize":
                 await cmd_normalize(args.limit)
             else:

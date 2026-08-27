@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.card import draft_for, players_for, timeline_for
 from app.core.redis import get_redis
 from app.db.models.matches import Match, Series
 from app.db.models.reference import Team
@@ -102,4 +103,7 @@ async def match_detail(match_id: int, session: AsyncSession = Depends(get_sessio
         is_live=match.radiant_win is None,
         radiant_win=match.radiant_win,
         curve=curve,
+        players=await players_for(session, match_id),
+        draft=await draft_for(session, match_id),
+        timeline=await timeline_for(session, match_id),
     )
