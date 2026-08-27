@@ -36,3 +36,7 @@ class OpenDotaClient(BaseClient):
 
     async def team_players(self, team_id: int) -> list[dict[str, Any]]:
         return await self.get_json(f"/teams/{team_id}/players")  # type: ignore[no-any-return]
+
+    async def heroes(self) -> dict[str, Any]:
+        """Hero constants. One call for all of them, and they change a few times a year."""
+        return await self.get_json("/constants/heroes")  # type: ignore[no-any-return]

@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import case, func, select, text, update
+from sqlalchemy import case, delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -594,15 +594,12 @@ async def normalize_match_details(
                 }
             )
 
+        touched = [int(row["match_id"]) for row in enrichment]
         async with session_factory() as session:
-            report.match_players += await _upsert_composite(
-                session, MatchPlayer, players, ["match_id", "player_slot"]
-            )
-            report.match_drafts += await _upsert_composite(
-                session, MatchDraft, drafts, ["match_id", "order"]
-            )
-            report.match_objectives += await _upsert_composite(
-                session, MatchObjective, objectives, ["match_id", "ordinal"]
+            report.match_players += await _replace_children(session, MatchPlayer, players, touched)
+            report.match_drafts += await _replace_children(session, MatchDraft, drafts, touched)
+            report.match_objectives += await _replace_children(
+                session, MatchObjective, objectives, touched
             )
             await _enrich_matches(session, enrichment)
             await session.commit()
@@ -625,22 +622,30 @@ async def normalize_match_details(
 _MAX_BIND_PARAMS = 30000
 
 
-async def _upsert_composite(
-    session: AsyncSession, model: Any, rows: list[dict[str, Any]], key: list[str]
+async def _replace_children(
+    session: AsyncSession, model: Any, rows: list[dict[str, Any]], match_ids: list[int]
 ) -> int:
+    """Replace a match's child rows wholesale rather than merging into what is there.
+
+    Upserting on `(match_id, ordinal)` looks equivalent and is not: a re-parse that produces
+    *fewer* rows refreshes the ones it covers and leaves the tail behind. That is exactly
+    what happened when a map parsed from OpenDota (43 objectives) was re-parsed from STRATZ
+    (24) - the match card showed every late event twice, once from each parse.
+
+    Child rows belong to the parse that produced them, so the parse owns all of them.
+    """
+    if not match_ids:
+        return 0
+
+    await session.execute(delete(model).where(model.match_id.in_(match_ids)))
     if not rows:
         return 0
 
-    updatable = sorted(set(rows[0]) - set(key))
+    # Postgres refuses a statement carrying more than 32767 bind parameters, and one row
+    # spends one per column; a few hundred maps carry thousands of objectives between them.
     chunk_size = max(1, _MAX_BIND_PARAMS // len(rows[0]))
-
     for start in range(0, len(rows), chunk_size):
-        statement = insert(model).values(rows[start : start + chunk_size])
-        statement = statement.on_conflict_do_update(
-            index_elements=key,
-            set_={name: getattr(statement.excluded, name) for name in updatable},
-        )
-        await session.execute(statement)
+        await session.execute(insert(model).values(rows[start : start + chunk_size]))
 
     return len(rows)
 

@@ -69,8 +69,61 @@ class PredictionPoint(BaseModel):
     predicted_at: datetime
 
 
+class MatchPlayerBrief(BaseModel):
+    """One player on the match card (F2).
+
+    `player_name` is null for 13% of rows: `/proPlayers` only lists players with a pro
+    profile, and a stand-in may not have one. Null is left as null rather than filled with
+    the account id, which reads as a name and is not one.
+    """
+
+    player_slot: int
+    is_radiant: bool
+    hero_id: int | None = None
+    hero_name: str | None = None
+    hero_image: str | None = None
+    account_id: int | None = None
+    player_name: str | None = None
+    kills: int | None = None
+    deaths: int | None = None
+    assists: int | None = None
+    last_hits: int | None = None
+    denies: int | None = None
+    net_worth: int | None = None
+    gold_per_min: int | None = None
+    xp_per_min: int | None = None
+
+
+class DraftEntry(BaseModel):
+    """One pick or ban, in the order it happened (F2)."""
+
+    order: int
+    is_pick: bool
+    is_radiant: bool
+    hero_id: int
+    hero_name: str | None = None
+    hero_image: str | None = None
+
+
+class TimelineEvent(BaseModel):
+    """A key moment, in a form the UI can label without re-parsing Valve's strings.
+
+    The raw log stores `building_kill` plus an npc name, and chat events as
+    `CHAT_MESSAGE_*`. Both are decoded here so the client renders meaning rather than
+    guessing at vocabulary that belongs to the ingestion layer.
+    """
+
+    time: int  # seconds from the horn; negative before it
+    minute: int
+    kind: str  # tower | barracks | ancient | roshan | aegis | first_blood | tormentor
+    #: For a building, the side that LOST it. For roshan and first blood, the side that did
+    #: it. Null when the log does not say.
+    is_radiant: bool | None = None
+    lane: str | None = None
+
+
 class MatchDetail(BaseModel):
-    """F2: match card with the probability curve."""
+    """F2: match card with the probability curve, rosters, draft and timeline."""
 
     match_id: int
     radiant: TeamBrief
@@ -79,6 +132,9 @@ class MatchDetail(BaseModel):
     is_live: bool
     radiant_win: bool | None = None
     curve: list[PredictionPoint] = []
+    players: list[MatchPlayerBrief] = []
+    draft: list[DraftEntry] = []
+    timeline: list[TimelineEvent] = []
 
 
 class ModelMetrics(BaseModel):

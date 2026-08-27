@@ -76,6 +76,32 @@ class Team(Base, TimestampMixin):
     logo_url: Mapped[str | None] = mapped_column(String(512))
 
 
+class Hero(Base, TimestampMixin):
+    """Hero constants (spec section 2.2/A3).
+
+    `match_drafts` and `match_players` store bare hero ids, so without this table a match
+    card can only show numbers. Kept server-side rather than as a static file in the SPA for
+    two reasons: the draft sub-model of section 6.3 will need heroes on the server anyway,
+    and a shipped file goes stale silently the next time Valve adds a hero.
+
+    Loaded from `/constants/heroes`, which costs no quota worth counting - one call for all
+    127 of them, and the same data is mirrored in the odota/dotaconstants repository.
+    """
+
+    __tablename__ = "heroes"
+
+    hero_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    #: `npc_dota_hero_antimage` - the internal name, stable across renames of the display one.
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    localized_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    primary_attr: Mapped[str | None] = mapped_column(String(8))
+    attack_type: Mapped[str | None] = mapped_column(String(16))
+    roles: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
+    #: Path under Valve's CDN, as OpenDota reports it. Stored as given rather than expanded
+    #: into a full URL: the host has changed before, and the join is the caller's business.
+    image_path: Mapped[str | None] = mapped_column(String(255))
+
+
 class Player(Base, TimestampMixin):
     __tablename__ = "players"
 
