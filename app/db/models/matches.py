@@ -128,14 +128,24 @@ class MatchDraft(Base):
 
 
 class MatchObjective(Base):
+    """Event log of one map: towers, Roshan, aegis, tier kills.
+
+    Keyed by position in the source array rather than a surrogate id, because two events of
+    the same type can share a second and the layer is rebuilt from raw repeatedly - without
+    a natural key every rebuild would duplicate the whole log.
+    """
+
     __tablename__ = "match_objectives"
     __table_args__ = (Index("ix_match_objectives_match_time", "match_id", "time"),)
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     match_id: Mapped[int] = mapped_column(
-        ForeignKey("matches.match_id", ondelete="CASCADE"), nullable=False
+        ForeignKey("matches.match_id", ondelete="CASCADE"), primary_key=True
     )
-    time: Mapped[int] = mapped_column(Integer, nullable=False)  # seconds from game start
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Seconds from the horn; negative before it (pre-horn first blood is real).
+    time: Mapped[int] = mapped_column(Integer, nullable=False)
     type: Mapped[str] = mapped_column(String(64), nullable=False)
     team: Mapped[int | None] = mapped_column(Integer)
+    #: Arrives as either a number or a string depending on the event type, stored as text.
     key: Mapped[str | None] = mapped_column(String(64))
+    player_slot: Mapped[int | None] = mapped_column(Integer)

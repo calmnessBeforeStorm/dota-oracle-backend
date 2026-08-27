@@ -4,6 +4,7 @@ The backfill is a long, interruptible job that a human starts and watches, not s
 scheduler should launch on its own - a stray restart would burn the OpenDota monthly quota.
 
     docker compose exec api python -m app.ingestion.cli backfill --pages 5
+    docker compose exec api python -m app.ingestion.cli details --limit 200
     docker compose exec api python -m app.ingestion.cli normalize
     docker compose exec api python -m app.ingestion.cli status
 """
@@ -15,13 +16,23 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import dispose_engine, get_session_factory
 from app.ingestion.clients.opendota import OpenDotaClient
-from app.ingestion.normalize import normalize_pro_matches, normalized_counts
+from app.ingestion.normalize import (
+    normalize_match_details,
+    normalize_pro_matches,
+    normalized_counts,
+)
 from app.ingestion.repository import count_raw_matches, get_checkpoint
 from app.ingestion.sources import Checkpoint, RawSource
 from app.ingestion.workers.backfill import run_backfill
+from app.ingestion.workers.details import count_missing_details, run_details_backfill
 
 #: ~100 matches per call at 60 req/min, so a page costs about a second of wall clock.
 PAGE_SIZE_HINT = 100
+
+#: Measured, not the rate limit. A full match payload is large and OpenDota takes ~3.5s to
+#: build it, so detail throughput is bound by response time rather than by the 60 req/min
+#: allowance: 150 maps took 9m04s, i.e. about 17 a minute.
+DETAIL_FETCH_PER_MINUTE = 16.5
 
 
 async def cmd_backfill(pages: int, restart: bool) -> None:
@@ -34,15 +45,39 @@ async def cmd_backfill(pages: int, restart: bool) -> None:
     print(f"stopped because: {report.stopped_because}")
 
 
+async def cmd_details(limit: int, oldest_first: bool) -> None:
+    async with OpenDotaClient() as client:
+        report = await run_details_backfill(
+            client, get_session_factory(), limit=limit, newest_first=not oldest_first
+        )
+
+    print(f"requested: {report.requested}")
+    print(f"fetched:   {report.fetched}")
+    print(f"failed:    {report.failed}")
+    print(f"remaining: {report.remaining}")
+    if report.remaining:
+        hours = report.remaining / DETAIL_FETCH_PER_MINUTE / 60
+        print(f"           (~{hours:.1f} h at ~{DETAIL_FETCH_PER_MINUTE} maps/min)")
+
+
 async def cmd_normalize(limit: int | None) -> None:
-    report = await normalize_pro_matches(get_session_factory(), limit=limit)
-    print(f"raw rows read: {report.raw_seen}")
-    print(f"leagues:       {report.leagues}")
-    print(f"teams:         {report.teams}")
-    print(f"series:        {report.series}")
-    print(f"matches:       {report.matches}")
-    if report.skipped:
-        print(f"skipped:       {report.skipped}")
+    summaries = await normalize_pro_matches(get_session_factory(), limit=limit)
+    details = await normalize_match_details(get_session_factory(), limit=limit)
+
+    print("from /proMatches summaries")
+    print(f"  raw rows read: {summaries.raw_seen}")
+    print(f"  leagues:       {summaries.leagues}")
+    print(f"  teams:         {summaries.teams}")
+    print(f"  series:        {summaries.series}")
+    print(f"  matches:       {summaries.matches}")
+    print("from /matches/{id} details")
+    print(f"  raw rows read: {details.raw_seen}")
+    print(f"  players:       {details.match_players}")
+    print(f"  draft picks:   {details.match_drafts}")
+    print(f"  objectives:    {details.match_objectives}")
+    for report in (summaries, details):
+        if report.skipped:
+            print(f"  skipped:       {report.skipped}")
 
 
 async def cmd_status() -> None:
@@ -52,6 +87,7 @@ async def cmd_status() -> None:
         details = await count_raw_matches(session, RawSource.OPENDOTA_MATCH)
         total = await count_raw_matches(session)
         normalized = await normalized_counts(session)
+        missing = await count_missing_details(session)
 
     print(f"checkpoint (oldest match_id seen): {cursor or '-'}")
     print(f"raw pro-match summaries:           {summaries}")
@@ -60,6 +96,7 @@ async def cmd_status() -> None:
     print()
     for label, count in normalized.items():
         print(f"{label:<34} {count}")
+    print(f"{'maps still missing details':<34} {missing}")
 
 
 def main() -> None:
@@ -84,6 +121,16 @@ def main() -> None:
     )
     normalize.add_argument("--limit", type=int, default=None, help="stop after N raw rows")
 
+    details = sub.add_parser("details", help="fetch /matches/{id} payloads for maps that lack one")
+    details.add_argument(
+        "--limit", type=int, default=100, help="maps to fetch, one API call each (default: 100)"
+    )
+    details.add_argument(
+        "--oldest-first",
+        action="store_true",
+        help="walk history forwards instead of starting from the most recent maps",
+    )
+
     sub.add_parser("status", help="show checkpoint and raw row counts")
 
     args = parser.parse_args()
@@ -93,6 +140,8 @@ def main() -> None:
         try:
             if args.command == "backfill":
                 await cmd_backfill(args.pages, args.restart)
+            elif args.command == "details":
+                await cmd_details(args.limit, args.oldest_first)
             elif args.command == "normalize":
                 await cmd_normalize(args.limit)
             else:

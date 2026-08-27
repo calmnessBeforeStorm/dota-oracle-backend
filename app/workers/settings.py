@@ -11,6 +11,7 @@ from arq.cron import cron
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.ingestion.workers.backfill import backfill_pro_matches
+from app.ingestion.workers.details import backfill_match_details
 from app.ingestion.workers.live_poller import poll_live_games
 from app.ingestion.workers.sync import sync_liquipedia
 
@@ -35,7 +36,12 @@ class WorkerSettings:
         port=get_settings().redis_port,
         database=get_settings().redis_db,
     )
-    functions: ClassVar[list[Any]] = [backfill_pro_matches, poll_live_games, sync_liquipedia]
+    functions: ClassVar[list[Any]] = [
+        backfill_pro_matches,
+        backfill_match_details,
+        poll_live_games,
+        sync_liquipedia,
+    ]
     cron_jobs: ClassVar[list[Any]] = [
         # Live loop: every 30s, per spec section 2.4.
         cron(poll_live_games, second={0, 30}, run_at_startup=True, max_tries=1),

@@ -16,12 +16,12 @@ What a `/proMatches` summary can and cannot fill:
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.logging import get_logger
-from app.db.models.matches import Match, Series
+from app.db.models.matches import Match, MatchDraft, MatchObjective, MatchPlayer, Series
 from app.db.models.raw import RawMatch
 from app.db.models.reference import League, Team
 from app.ingestion.repository import utcnow
@@ -41,6 +41,9 @@ class NormalizeReport:
     teams: int = 0
     series: int = 0
     matches: int = 0
+    match_players: int = 0
+    match_drafts: int = 0
+    match_objectives: int = 0
     skipped: dict[str, int] = field(default_factory=dict)
 
     def skip(self, reason: str) -> None:
@@ -53,6 +56,9 @@ class NormalizeReport:
             "teams": self.teams,
             "series": self.series,
             "matches": self.matches,
+            "match_players": self.match_players,
+            "match_drafts": self.match_drafts,
+            "match_objectives": self.match_objectives,
             "skipped": self.skipped,
         }
 
@@ -321,3 +327,168 @@ async def normalized_counts(session: AsyncSession) -> dict[str, int]:
     )
     counts["series without format (phase 2)"] = int(unknown_format.scalar_one())
     return counts
+
+
+# --- match details -----------------------------------------------------------------------
+
+#: Radiant occupies slots 0-4, dire 128-132. This is the only side marker in the payload.
+DIRE_SLOT_THRESHOLD = 128
+
+
+def _as_key(value: Any) -> str | None:
+    """`objectives[].key` arrives as a number for some event types and a string for others."""
+    return None if value is None else str(value)[:64]
+
+
+def parse_match_detail(payload: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Split one `/matches/{id}` payload into rows for the normalized tables.
+
+    Note what is NOT read here: `series_id` and `series_type` come back null from this
+    endpoint (verified against the live API), so series membership stays owned by the
+    /proMatches summaries and must not be overwritten from details.
+    """
+    match_id = int(payload["match_id"])
+
+    players = [
+        {
+            "match_id": match_id,
+            "player_slot": int(player["player_slot"]),
+            "account_id": player.get("account_id"),
+            "hero_id": player.get("hero_id"),
+            "is_radiant": int(player["player_slot"]) < DIRE_SLOT_THRESHOLD,
+            "lane_role": player.get("lane_role"),
+            "kills": player.get("kills"),
+            "deaths": player.get("deaths"),
+            "assists": player.get("assists"),
+            "last_hits": player.get("last_hits"),
+            "denies": player.get("denies"),
+            "net_worth": player.get("net_worth"),
+            "gold_per_min": player.get("gold_per_min"),
+            "xp_per_min": player.get("xp_per_min"),
+            "leaver_status": player.get("leaver_status"),
+            "is_standin": False,  # needs roster history from Liquipedia (phase 2)
+        }
+        for player in payload.get("players") or []
+        if player.get("player_slot") is not None
+    ]
+
+    drafts = [
+        {
+            "match_id": match_id,
+            "order": int(entry["order"]),
+            "is_pick": bool(entry["is_pick"]),
+            "hero_id": int(entry["hero_id"]),
+            "team": int(entry["team"]),
+        }
+        for entry in payload.get("picks_bans") or []
+        if entry.get("order") is not None and entry.get("hero_id") is not None
+    ]
+
+    objectives = [
+        {
+            "match_id": match_id,
+            "ordinal": ordinal,
+            "time": int(event.get("time", 0)),
+            "type": str(event.get("type", ""))[:64],
+            "team": event.get("team"),
+            "key": _as_key(event.get("key")),
+            "player_slot": event.get("player_slot"),
+        }
+        for ordinal, event in enumerate(payload.get("objectives") or [])
+        if event.get("type")
+    ]
+
+    return {"players": players, "drafts": drafts, "objectives": objectives}
+
+
+async def normalize_match_details(
+    session_factory: async_sessionmaker[AsyncSession],
+    batch_size: int = 200,
+    limit: int | None = None,
+) -> NormalizeReport:
+    """Rebuild rosters, drafts and objectives from stored detail payloads."""
+    report = NormalizeReport()
+    offset = 0
+
+    while True:
+        async with session_factory() as session:
+            statement = (
+                select(RawMatch.payload)
+                .where(RawMatch.source == str(RawSource.OPENDOTA_MATCH))
+                .order_by(RawMatch.match_id)
+                .offset(offset)
+                .limit(batch_size if limit is None else min(batch_size, limit - offset))
+            )
+            payloads = list((await session.execute(statement)).scalars().all())
+
+        if not payloads:
+            break
+
+        players: list[dict[str, Any]] = []
+        drafts: list[dict[str, Any]] = []
+        objectives: list[dict[str, Any]] = []
+        enrichment: list[dict[str, Any]] = []
+
+        for payload in payloads:
+            if payload.get("match_id") is None:
+                report.skip("no match_id")
+                continue
+            parsed = parse_match_detail(payload)
+            players.extend(parsed["players"])
+            drafts.extend(parsed["drafts"])
+            objectives.extend(parsed["objectives"])
+            enrichment.append(
+                {
+                    "match_id": int(payload["match_id"]),
+                    # Only what the summary could not tell us. Series fields are absent from
+                    # this endpoint and are deliberately not touched.
+                    "patch": payload.get("patch"),
+                    "is_parsed": payload.get("version") is not None,
+                    "updated_at": utcnow(),
+                }
+            )
+
+        async with session_factory() as session:
+            report.match_players += await _upsert_composite(
+                session, MatchPlayer, players, ["match_id", "player_slot"]
+            )
+            report.match_drafts += await _upsert_composite(
+                session, MatchDraft, drafts, ["match_id", "order"]
+            )
+            report.match_objectives += await _upsert_composite(
+                session, MatchObjective, objectives, ["match_id", "ordinal"]
+            )
+            await _enrich_matches(session, enrichment)
+            await session.commit()
+
+        offset += len(payloads)
+        report.raw_seen = offset
+        log.info("normalize_details.batch", seen=offset)
+
+        if limit is not None and offset >= limit:
+            break
+
+    log.info("normalize_details.done", **report.as_log_fields())
+    return report
+
+
+async def _upsert_composite(
+    session: AsyncSession, model: Any, rows: list[dict[str, Any]], key: list[str]
+) -> int:
+    if not rows:
+        return 0
+    statement = insert(model).values(rows)
+    updatable = sorted(set(rows[0]) - set(key))
+    statement = statement.on_conflict_do_update(
+        index_elements=key,
+        set_={name: getattr(statement.excluded, name) for name in updatable},
+    )
+    await session.execute(statement)
+    return len(rows)
+
+
+async def _enrich_matches(session: AsyncSession, rows: list[dict[str, Any]]) -> None:
+    """Fill in what only the detail payload knows, without disturbing the rest of the row."""
+    if not rows:
+        return
+    await session.execute(update(Match), rows)
