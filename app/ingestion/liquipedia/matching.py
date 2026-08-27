@@ -92,6 +92,8 @@ class LeagueEvidence:
     first_match: date | None = None
     last_match: date | None = None
     team_count: int | None = None
+    #: Normalized names of the teams we actually saw play. The escalation signal.
+    team_names: frozenset[str] = frozenset()
 
 
 def date_overlap(
@@ -141,6 +143,8 @@ class MappingProposal:
     #: None when either side could not supply dates or a team count.
     date_overlap: float | None = None
     team_agreement: float | None = None
+    #: Share of our teams found on the page. None until the expensive lookup is spent.
+    roster_overlap: float | None = None
     is_showmatch: bool = False
 
     @property
@@ -156,6 +160,10 @@ class MappingProposal:
         parts.append(
             "teams -" if self.team_agreement is None else f"teams {self.team_agreement:.2f}"
         )
+        # Only present once the expensive lookup has been spent, so its absence is itself
+        # information: this candidate was never escalated.
+        if self.roster_overlap is not None:
+            parts.append(f"roster {self.roster_overlap:.2f}")
         return " ".join(parts)
 
 
@@ -190,10 +198,19 @@ DATE_VETO_SCORE = 0.45
 TEAM_VETO_AGREEMENT = 0.5
 
 
+#: Below this the page names almost none of the teams we saw: a different tournament.
+ROSTER_VETO = 0.35
+
+#: Above this the page names most of our field. Two unrelated tournaments do not share a
+#: roster, so this is allowed to carry a weak name over the line on its own.
+ROSTER_DECISIVE = 0.7
+
+
 def combine_signals(
     name: float,
     overlap: float | None,
     teams: float | None,
+    roster: float | None = None,
 ) -> float:
     """Fold the corroborating signals into the final confidence.
 
@@ -215,6 +232,15 @@ def combine_signals(
         if teams < TEAM_VETO_AGREEMENT:
             return min(score, 0.6)
         score = min(1.0, score + 0.04 * teams)
+
+    if roster is not None:
+        # Unlike the other signals this one is nearly unique to a tournament, so it is
+        # allowed to decide rather than only to nudge - in both directions.
+        if roster < ROSTER_VETO:
+            return min(score, 0.3)
+        if roster >= ROSTER_DECISIVE:
+            return max(score, 0.5 + 0.5 * roster)
+        score = min(1.0, score + 0.15 * roster)
 
     return score
 

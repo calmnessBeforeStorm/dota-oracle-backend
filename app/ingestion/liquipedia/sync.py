@@ -24,12 +24,20 @@ from app.core.logging import get_logger
 from app.db.models.enums import LeagueTier
 from app.db.models.matches import Match
 from app.db.models.reference import League, LeagueMapping, TournamentStage
+from app.db.models.reference import Team as TeamModel
 from app.ingestion.liquipedia.matching import (
+    AUTO_ACCEPT_SCORE,
     LeagueEvidence,
     MappingProposal,
     best_proposal,
+    combine_signals,
 )
 from app.ingestion.liquipedia.meta import TournamentMeta, parse_meta_description
+from app.ingestion.liquipedia.participants import (
+    extract_participants,
+    normalize_team,
+    roster_overlap,
+)
 from app.ingestion.liquipedia.wikitext import parse_stage_formats
 from app.ingestion.repository import utcnow
 
@@ -57,6 +65,10 @@ class SyncReport:
     needs_review: list[MappingProposal] = field(default_factory=list)
     #: Page title -> the leagues that all claimed it. Never applied automatically.
     conflicts: dict[str, list[str]] = field(default_factory=dict)
+    #: Expensive roster lookups spent, and what they changed.
+    escalated: int = 0
+    rescued: int = 0
+    rejected: int = 0
 
     def as_log_fields(self) -> dict[str, Any]:
         return {
@@ -67,6 +79,9 @@ class SyncReport:
             "stages_written": self.stages_written,
             "needs_review": len(self.needs_review),
             "conflicts": len(self.conflicts),
+            "escalated": self.escalated,
+            "rescued": self.rescued,
+            "rejected": self.rejected,
         }
 
 
@@ -122,6 +137,8 @@ async def league_evidence(session: AsyncSession) -> dict[int, LeagueEvidence]:
         )
     ).all()
 
+    names = await _team_names_by_league(session)
+
     evidence: dict[int, LeagueEvidence] = {}
     for league_id, first, last, radiant_teams in rows:
         evidence[int(league_id)] = LeagueEvidence(
@@ -130,8 +147,32 @@ async def league_evidence(session: AsyncSession) -> dict[int, LeagueEvidence]:
             # Counting one side only would halve it; every team plays both sides across a
             # tournament, so distinct radiant teams is already the field size in practice.
             team_count=int(radiant_teams) or None,
+            team_names=names.get(int(league_id), frozenset()),
         )
     return evidence
+
+
+async def _team_names_by_league(session: AsyncSession) -> dict[int, frozenset[str]]:
+    """Normalized names of the teams that actually played in each league."""
+    rows = (
+        await session.execute(
+            select(Match.league_id, TeamModel.name)
+            .join(
+                TeamModel,
+                (TeamModel.team_id == Match.radiant_team_id)
+                | (TeamModel.team_id == Match.dire_team_id),
+            )
+            .where(Match.league_id.is_not(None), TeamModel.name.is_not(None))
+            .distinct()
+        )
+    ).all()
+
+    collected: dict[int, set[str]] = {}
+    for league_id, name in rows:
+        normalized = normalize_team(str(name))
+        if normalized:
+            collected.setdefault(int(league_id), set()).add(normalized)
+    return {league_id: frozenset(names) for league_id, names in collected.items()}
 
 
 async def propose_mappings(
@@ -174,6 +215,84 @@ async def propose_mappings(
                 confident=proposal.is_confident,
             )
     return proposals
+
+
+#: Worth paying a rate-limited page fetch for. Below this the name is so far off that the
+#: roster could only confirm what we already believe, and the budget is better spent
+#: elsewhere; above it the cheap signals already decided.
+ESCALATION_FLOOR = 0.25
+
+
+async def escalate_uncertain(
+    client: LiquipediaSource,
+    proposals: list[MappingProposal],
+    evidence: dict[int, LeagueEvidence],
+    budget: int,
+) -> tuple[list[MappingProposal], SyncReport]:
+    """Spend page fetches on the candidates the cheap signals could not settle.
+
+    The order is deliberate: the closest calls first, because a fetch is worth most where
+    the decision is nearly balanced. Each costs 30 seconds of rate limit, so `budget` is a
+    hard cap rather than a suggestion.
+    """
+    stats = SyncReport()
+    if budget <= 0:
+        return proposals, stats
+
+    undecided = [
+        p
+        for p in proposals
+        if not p.is_confident and p.score >= ESCALATION_FLOOR and evidence.get(p.league_id)
+    ]
+    undecided.sort(key=lambda p: -p.score)
+
+    resolved: dict[int, MappingProposal] = {}
+    for proposal in undecided[:budget]:
+        ours = evidence[proposal.league_id].team_names
+        if not ours:
+            continue
+
+        wikitext = await client.page_wikitext(proposal.page_title)
+        overlap = roster_overlap(set(ours), extract_participants(wikitext))
+        stats.escalated += 1
+
+        rescored = MappingProposal(
+            league_id=proposal.league_id,
+            league_name=proposal.league_name,
+            page_title=proposal.page_title,
+            score=combine_signals(
+                proposal.name_only_score,
+                proposal.date_overlap,
+                proposal.team_agreement,
+                overlap,
+            ),
+            tier=proposal.tier,
+            is_lan=proposal.is_lan,
+            is_tournament=proposal.is_tournament,
+            name_only_score=proposal.name_only_score,
+            date_overlap=proposal.date_overlap,
+            team_agreement=proposal.team_agreement,
+            roster_overlap=overlap,
+            is_showmatch=proposal.is_showmatch,
+        )
+        resolved[proposal.league_id] = rescored
+
+        if rescored.score >= AUTO_ACCEPT_SCORE:
+            stats.rescued += 1
+        elif rescored.score < proposal.score:
+            stats.rejected += 1
+
+        log.info(
+            "liquipedia.escalated",
+            league_id=proposal.league_id,
+            name=proposal.league_name,
+            page=proposal.page_title,
+            was=round(proposal.score, 3),
+            now=round(rescored.score, 3),
+            roster=None if overlap is None else round(overlap, 3),
+        )
+
+    return [resolved.get(p.league_id, p) for p in proposals], stats
 
 
 async def apply_mapping(
@@ -274,10 +393,20 @@ async def sync_liquipedia_leagues(
     limit: int | None = None,
     apply: bool = False,
     with_stages: bool = True,
+    escalate: int = 0,
 ) -> SyncReport:
-    """Full pass: propose, then optionally persist the confident ones and their stages."""
+    """Full pass: propose, escalate the close calls, then optionally persist and read stages."""
     report = SyncReport()
     proposals = await propose_mappings(client, session_factory, limit=limit)
+
+    if escalate:
+        async with session_factory() as session:
+            evidence = await league_evidence(session)
+        proposals, stats = await escalate_uncertain(client, proposals, evidence, escalate)
+        report.escalated = stats.escalated
+        report.rescued = stats.rescued
+        report.rejected = stats.rejected
+
     report.leagues_seen = len(proposals)
     report.proposed = len(proposals)
 

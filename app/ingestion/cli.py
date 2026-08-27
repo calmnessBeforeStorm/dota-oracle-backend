@@ -108,7 +108,7 @@ async def cmd_liquipedia(page: str) -> None:
         print(f"       {stage.evidence[:110]}")
 
 
-async def cmd_map_leagues(limit: int | None, apply: bool) -> None:
+async def cmd_map_leagues(limit: int | None, apply: bool, escalate: int) -> None:
     """Propose (and optionally apply) league -> Liquipedia mappings.
 
     A wrong match mislabels every game of a tournament, so nothing is written unless
@@ -116,13 +116,18 @@ async def cmd_map_leagues(limit: int | None, apply: bool) -> None:
     """
     async with LiquipediaClient() as client:
         report = await sync_liquipedia_leagues(
-            client, get_session_factory(), limit=limit, apply=apply
+            client, get_session_factory(), limit=limit, apply=apply, escalate=escalate
         )
 
     print(f"leagues examined: {report.leagues_seen}")
     print(f"confident:        {report.confident}")
     print(f"applied:          {report.applied}{'' if apply else '  (dry run, pass --apply)'}")
     print(f"stages written:   {report.stages_written}")
+    if report.escalated:
+        print(
+            f"roster lookups:   {report.escalated}"
+            f"  (+{report.rescued} resolved, -{report.rejected} ruled out)"
+        )
 
     if report.conflicts:
         print()
@@ -214,6 +219,16 @@ def main() -> None:
     mapping.add_argument(
         "--apply", action="store_true", help="persist confident proposals (default: dry run)"
     )
+    mapping.add_argument(
+        "--escalate",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "spend up to N page fetches checking rosters on the closest calls; "
+            "each costs 30s of Liquipedia rate limit"
+        ),
+    )
 
     sub.add_parser("status", help="show checkpoint and raw row counts")
 
@@ -227,7 +242,7 @@ def main() -> None:
             elif args.command == "details":
                 await cmd_details(args.limit, args.oldest_first)
             elif args.command == "map-leagues":
-                await cmd_map_leagues(args.limit, args.apply)
+                await cmd_map_leagues(args.limit, args.apply, args.escalate)
             elif args.command == "liquipedia":
                 await cmd_liquipedia(args.page)
             elif args.command == "normalize":
