@@ -20,6 +20,7 @@ from typing import Any
 
 import orjson
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
@@ -34,6 +35,7 @@ from app.features.adapters.steam import from_live_league_game
 from app.features.game_state import SeriesContext
 from app.features.live import build_live_features
 from app.ingestion.clients.steam import SteamClient
+from app.ingestion.repository import utcnow
 from app.ingestion.sources import RawSource
 from app.ml.predictor import get_predictor
 
@@ -164,6 +166,27 @@ def _feed_entry(
     }
 
 
+async def _register_unseen_leagues(session: AsyncSession, league_ids: set[int]) -> int:
+    """Record leagues the backfill has never reached.
+
+    A live game routinely belongs to a tournament outside our slice of history. Noting the
+    id costs nothing and is what lets the Liquipedia mapping reach it later; the name and
+    tier stay unknown rather than being invented from the game payload, which carries
+    neither.
+    """
+    if not league_ids:
+        return 0
+    now = utcnow()
+    statement = insert(League).values(
+        [{"league_id": league_id, "created_at": now, "updated_at": now} for league_id in league_ids]
+    )
+    # Existing rows are left exactly as they are: this pass knows less than they do.
+    statement = statement.on_conflict_do_nothing(index_elements=[League.league_id])
+    result = await session.execute(statement)
+    # CursorResult carries rowcount; the base Result type mypy infers here does not.
+    return int(result.rowcount or 0)  # type: ignore[attr-defined]
+
+
 async def poll_live_games(ctx: dict[str, Any]) -> int:
     """One tick of the live loop. Returns the number of games predicted for."""
     session_factory = get_session_factory()
@@ -180,9 +203,9 @@ async def poll_live_games(ctx: dict[str, Any]) -> int:
     feed: list[dict[str, Any]] = []
 
     async with session_factory() as session:
-        contexts = await _league_context(
-            session, {int(g.get("league_id", 0) or 0) for g in games if g.get("league_id")}
-        )
+        league_ids = {int(g.get("league_id", 0) or 0) for g in games if g.get("league_id")}
+        discovered = await _register_unseen_leagues(session, league_ids)
+        contexts = await _league_context(session, league_ids)
 
         for game in games:
             match_id = int(game.get("match_id", 0) or 0)
@@ -243,5 +266,5 @@ async def poll_live_games(ctx: dict[str, Any]) -> int:
     redis = get_redis()
     await redis.set(LIVE_FEED_KEY, orjson.dumps(feed).decode(), ex=LIVE_FEED_TTL)
 
-    log.info("live_poll.tick", games=len(games), predicted=len(feed))
+    log.info("live_poll.tick", games=len(games), predicted=len(feed), new_leagues=discovered)
     return len(feed)

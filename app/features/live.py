@@ -2,6 +2,20 @@
 
 Both the offline pipeline and the live service call `build_live_features(GameState)`.
 Nothing else is allowed to compute a feature.
+
+**A feature only exists here if both sources can supply it.** That rule cost us the XP
+advantage, which is worth recording because it is tempting to add back.
+
+OpenDota gives `radiant_xp_adv` per minute, exactly. The live scoreboard gives neither
+cumulative XP nor a way to recover it: measured over 400 stored matches, reconstructing a
+player's level from XP through an empirically derived threshold table lands within one level
+only 53% of the time, and the resulting `xp_adv` sits 25.6% off the true value at the median.
+A feature that is exact in training and 25% wrong in production is precisely the train/serve
+skew section 6.4 warns about - and it would show up as a model that works in the notebook
+and disappoints in the live loop, with nothing in the metrics to explain it.
+
+Gold advantage carries most of the same information and both sides supply it exactly, so
+the XP advantage stays on `GameState` as raw data and out of the feature vector.
 """
 
 import math
@@ -15,9 +29,7 @@ FEATURE_ORDER: tuple[str, ...] = (
     "log_minute",
     # economy
     "gold_adv",
-    "xp_adv",
     "gold_adv_norm",
-    "xp_adv_norm",
     # buildings
     "tower_diff",
     "barracks_diff",
@@ -83,10 +95,8 @@ def build_live_features(state: GameState) -> dict[str, float]:
         "minute": float(minute),
         "log_minute": math.log(minute + 1),
         "gold_adv": float(state.gold_adv),
-        "xp_adv": float(state.xp_adv),
         # Normalising by time keeps an early 2k lead from looking like a late 2k lead.
         "gold_adv_norm": state.gold_adv / (minute + 5),
-        "xp_adv_norm": state.xp_adv / (minute + 5),
         "tower_diff": float(state.radiant.tower_count - state.dire.tower_count),
         "barracks_diff": float(state.radiant.barracks_count - state.dire.barracks_count),
         "radiant_towers": float(state.radiant.tower_count),

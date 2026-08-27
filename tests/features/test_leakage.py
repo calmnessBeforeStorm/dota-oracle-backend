@@ -133,3 +133,66 @@ class TestEarlyMinutesCarryLittleSignal:
         assert features["roshan_kills"] == 0
         assert features["aegis_holder"] == 0
         assert features["roshan_respawn_in"] == 0
+
+
+class TestSourceParity:
+    """A feature may only exist if both sources can supply it (spec section 6.4).
+
+    This is what removed the XP advantage. OpenDota gives radiant_xp_adv exactly; the live
+    scoreboard gives neither cumulative XP nor a way back to it - measured over 400 stored
+    matches, reconstructing level from XP lands within one level 53% of the time and the
+    resulting xp_adv sits 25.6% off at the median. Exact in training and a quarter wrong in
+    production is the definition of train/serve skew.
+    """
+
+    def test_the_live_path_can_produce_every_feature(self) -> None:
+        from app.features.adapters.steam import from_live_league_game
+        from app.features.live import FEATURE_ORDER
+
+        # Shaped after a real GetLiveLeagueGames entry.
+        game = {
+            "match_id": 1,
+            "scoreboard": {
+                "duration": 1230.5,
+                "roshan_respawn_timer": 81,
+                "radiant": {
+                    "score": 12,
+                    "tower_state": 1926,
+                    "barracks_state": 51,
+                    "players": [{"net_worth": 14000}],
+                },
+                "dire": {
+                    "score": 7,
+                    "tower_state": 2047,
+                    "barracks_state": 63,
+                    "players": [{"net_worth": 11000}],
+                },
+            },
+        }
+        live = build_live_features(from_live_league_game(game))
+        assert set(live) == set(FEATURE_ORDER)
+
+    def test_xp_advantage_is_deliberately_absent(self) -> None:
+        """Guards against it being added back for looking obviously useful."""
+        from app.features.live import FEATURE_ORDER
+
+        assert "xp_adv" not in FEATURE_ORDER
+        assert "xp_adv_norm" not in FEATURE_ORDER
+
+    def test_both_adapters_agree_on_the_feature_set(self, match: dict[str, Any]) -> None:
+        from app.features.adapters.steam import from_live_league_game
+
+        offline = build_live_features(snapshot_at(match, 20))
+        live = build_live_features(
+            from_live_league_game(
+                {
+                    "match_id": match["match_id"],
+                    "scoreboard": {
+                        "duration": 1230.0,
+                        "radiant": {"score": 0, "tower_state": 2047, "barracks_state": 63},
+                        "dire": {"score": 0, "tower_state": 2047, "barracks_state": 63},
+                    },
+                }
+            )
+        )
+        assert set(offline) == set(live)
