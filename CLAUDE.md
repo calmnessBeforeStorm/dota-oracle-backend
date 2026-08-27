@@ -76,7 +76,7 @@ app/
 │   └── models/
 │       ├── enums.py         SeriesFormat (bo1/bo2/bo3/bo5), StageType, LeagueTier
 │       ├── raw.py           §4.1 сырьё + ingest_checkpoints
-│       ├── reference.py     leagues, tournament_stages, teams, players, team_rosters
+│       ├── reference.py     leagues, tournament_stages, teams, players, heroes, team_rosters
 │       ├── matches.py       series, matches, match_players/drafts/objectives
 │       └── training.py      match_snapshots, player_ratings, team_features, predictions
 ├── domain/series.py         правила серий: формат, Bo2, ничьи, is_conditional_game (§5.5)
@@ -92,11 +92,14 @@ app/
 │   ├── sources.py           RawSource / Checkpoint — что чем перезаписывается
 │   ├── repository.py        идемпотентные upsert-ы в raw-слой и чекпойнты
 │   ├── normalize.py         raw → leagues/teams/series/matches (сеть не трогает)
+│   ├── reference.py         герои и про-игроки из OpenDota (по одному вызову)
 │   ├── cli.py               backfill / normalize / status, запускается руками
 │   └── workers/             backfill, live_poller, sync
 ├── ml/                      predictor (инференс в процессе API), registry, pipeline
 ├── schemas/                 pydantic-схемы API
-├── api/routes/              health, matches, tournaments, teams, model, ws
+├── api/
+│   ├── card.py              сборка карточки матча: составы, драфт, таймлайн (F2)
+│   └── routes/              health, matches, tournaments, teams, model, ws
 └── workers/settings.py      arq WorkerSettings + cron
 ```
 
@@ -154,7 +157,13 @@ app/
 11. **`/matches/{id}` не знает о сериях.** `series_id` и `series_type` приходят оттуда
     `null` — принадлежность к серии владеет только слой сводок `/proMatches`, и разбор
     деталей не имеет права её перезаписывать.
-12. **Неизвестное хранится как NULL, а не как значение по умолчанию.** `series.format` и
+12. **Дочерние строки матча заменяются, а не мерджатся.** `match_players`, `match_drafts`
+    и `match_objectives` принадлежат тому разбору, который их породил. Upsert по
+    `(match_id, ordinal)` выглядит эквивалентным и не является им: разбор, дающий **меньше**
+    строк, обновит те, что покрыл, и оставит хвост. Ровно это и случилось — карта, разобранная
+    из OpenDota (43 события), а потом из STRATZ (24), показывала каждое позднее событие
+    дважды. `normalize._replace_children` сначала удаляет, потом вставляет.
+13. **Неизвестное хранится как NULL, а не как значение по умолчанию.** `series.format` и
     `matches.is_conditional_game` остаются NULL до фазы 2: подстановка `bo3` неотличима от
     знания позже, а `is_conditional_game` идёт прямо в обучающую выборку.
 
@@ -244,6 +253,7 @@ docker compose exec api alembic upgrade head
 # наполнение БД
 docker compose exec api python -m app.ingestion.cli backfill --pages 50
 docker compose exec api python -m app.ingestion.cli details --source stratz --limit 700
+docker compose exec api python -m app.ingestion.cli reference   # герои и имена игроков
 docker compose exec api python -m app.ingestion.cli normalize
 docker compose exec api python -m app.ingestion.cli status
 

@@ -499,3 +499,78 @@ class TestSourcePrecedence:
         async with sessionmaker() as check:
             row = (await check.execute(select(Match).where(Match.match_id == 43))).scalar_one()
         assert row.patch == 60  # OpenDota can supply a patch; STRATZ cannot
+
+
+class TestChildRowsAreReplaced:
+    """Re-parsing a match must leave only what the new parse produced.
+
+    Found on a real match card: the objectives list showed every late event twice. The map
+    had been parsed from OpenDota first (43 events) and from STRATZ later (24), and the
+    upsert on `(match_id, ordinal)` refreshed ordinals 0-23 while leaving 24-42 in place.
+    Child rows belong to their parse, so a parse replaces them rather than merging into them.
+    """
+
+    async def _seed_match(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await upsert_raw_matches(session, RawSource.OPENDOTA_PRO_MATCHES, [summary(42)])
+        await session.commit()
+        await normalize_pro_matches(sessionmaker)
+
+    async def test_a_shorter_reparse_drops_the_tail(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await self._seed_match(session, sessionmaker)
+
+        long_parse = {
+            "match_id": 42,
+            "version": 21,
+            "players": [],
+            "picks_bans": [],
+            "objectives": [
+                {"type": "building_kill", "time": 100 * i, "key": f"npc_dota_goodguys_tower{i}_top"}
+                for i in range(1, 6)
+            ],
+        }
+        await upsert_raw_matches(session, RawSource.OPENDOTA_MATCH, [long_parse])
+        await session.commit()
+        await normalize_match_details(sessionmaker)
+
+        async with sessionmaker() as check:
+            before = (
+                await check.execute(select(func.count()).select_from(MatchObjective))
+            ).scalar_one()
+        assert before == 5
+
+        # The same map, re-parsed from a source that reports fewer events.
+        short_parse = dict(STRATZ_PAYLOAD, id=42)
+        await upsert_raw_matches(session, RawSource.STRATZ_MATCH, [short_parse])
+        await session.commit()
+        await normalize_match_details(sessionmaker)
+
+        async with sessionmaker() as check:
+            rows = (await check.execute(select(MatchObjective))).scalars().all()
+        # The STRATZ payload carries four building events, one of which (npc id 36) has no
+        # counterpart in OpenDota's log and is dropped.
+        assert len(rows) == 3
+        assert {row.ordinal for row in rows} == {0, 1, 2}
+
+    async def test_rerunning_the_same_parse_changes_nothing(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Replacement must not break idempotency - normalize is re-run constantly."""
+        await self._seed_match(session, sessionmaker)
+        await upsert_raw_matches(session, RawSource.STRATZ_MATCH, [dict(STRATZ_PAYLOAD, id=42)])
+        await session.commit()
+
+        await normalize_match_details(sessionmaker)
+        await normalize_match_details(sessionmaker)
+
+        async with sessionmaker() as check:
+            players = (
+                await check.execute(select(func.count()).select_from(MatchPlayer))
+            ).scalar_one()
+            objectives = (
+                await check.execute(select(func.count()).select_from(MatchObjective))
+            ).scalar_one()
+        assert (players, objectives) == (2, 3)
