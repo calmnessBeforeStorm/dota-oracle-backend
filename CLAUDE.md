@@ -18,10 +18,25 @@ Tier 1 и отдаёт турнирный календарь. Две разны�
 
 ## Текущее состояние
 
-Фаза 0 («Скелет») по дорожной карте §11. Схема БД, адаптеры признаков, клиенты источников
-и API-контуры заложены; тела воркеров и ML-пайплайна помечены `TODO(phase-N)`.
+**Фаза 1 («Данные»)** по дорожной карте §11, идёт сейчас.
+
+- Фаза 0 закрыта: compose поднимает всё одной командой, `/health` отвечает.
+- Схема БД в миграциях, 18 таблиц.
+- Бэкфилл `/proMatches` → `raw_matches` работает, идемпотентен, резюмируется по чекпойнту.
+- Нормализация сырья → `leagues` / `teams` / `series` / `matches` работает, включая
+  нумерацию карт в серии и счёт серии со сменой сторон.
+- **Ещё нет:** деталей матчей (`/matches/{id}` — составы, драфты, события), а значит нет
+  `match_players`, `match_drafts`, `match_objectives`.
+- Тела `sync_liquipedia` (фаза 2), `poll_live_games` (фаза 5) и ML-пайплайна (фазы 3–4)
+  помечены `TODO(phase-N)`.
+
+Критерий выхода из фазы 1 (§11): ≥ 40k про-матчей с игроками, перезапуск не даёт дубликатов.
+
 Модель по умолчанию — `BaselinePredictor` (логрегрессия на `gold_adv` и `minute`), она же
 бейзлайн №3 из §7.3: настоящая модель обязана её заметно бить.
+
+Измерено на реальных данных: **41,4 про-матча в сутки, ≈ 15 100 в год**. Три года истории
+укладываются в одну месячную квоту OpenDota (подробности во врезке §2.2/A4 спеки).
 
 ## Карта репозитория
 
@@ -43,7 +58,12 @@ app/
 │   ├── live.py              ЕДИНСТВЕННЫЙ билдер признаков + FEATURE_ORDER
 │   └── adapters/            opendota.py (train) и steam.py (serve) → GameState
 ├── ingestion/
-│   ├── clients/             base (throttle + retry), opendota, stratz, steam, liquipedia
+│   ├── clients/             base (throttle + retry + редакция ключей), opendota, stratz,
+│   │                        steam, liquipedia
+│   ├── sources.py           RawSource / Checkpoint — что чем перезаписывается
+│   ├── repository.py        идемпотентные upsert-ы в raw-слой и чекпойнты
+│   ├── normalize.py         raw → leagues/teams/series/matches (сеть не трогает)
+│   ├── cli.py               backfill / normalize / status, запускается руками
 │   └── workers/             backfill, live_poller, sync
 ├── ml/                      predictor (инференс в процессе API), registry, pipeline
 ├── schemas/                 pydantic-схемы API
@@ -70,6 +90,13 @@ app/
    которая не знает о камбэках (§5.3).
 8. **Каждый выданный прогноз пишется в `predictions`** с `model_version` и `features`.
    Без этого падение качества через месяц необъяснимо.
+9. **`series_id` от Valve уникален только внутри лиги.** Идентичность серии —
+   `(league_id, valve_series_id)`, в БД под суррогатным `series.series_id`. Замерено: при
+   ключе по одному лишь Valve-идентификатору серии из разных лиг склеивались в одну.
+   Значения `0` и `null` означают «серии нет» — это не идентификатор.
+10. **Неизвестное хранится как NULL, а не как значение по умолчанию.** `series.format` и
+    `matches.is_conditional_game` остаются NULL до фазы 2: подстановка `bo3` неотличима от
+    знания позже, а `is_conditional_game` идёт прямо в обучающую выборку.
 
 ## Серии, Bo2 и ничьи (§5.5) — источник частых ошибок
 
@@ -138,9 +165,20 @@ pytest                          # тесты
 ruff check . && ruff format .   # линт
 mypy app                        # типы (strict)
 
-alembic revision --autogenerate -m "описание"   # миграция
-alembic upgrade head
+# миграции создаются внутри контейнера — там Python 3.12 и asyncpg
+docker compose exec api alembic revision --autogenerate -m "описание"
+docker compose exec api alembic upgrade head
+
+# наполнение БД
+docker compose exec api python -m app.ingestion.cli backfill --pages 50
+docker compose exec api python -m app.ingestion.cli normalize
+docker compose exec api python -m app.ingestion.cli status
 ```
+
+**`alembic downgrade base` на рабочей БД не запускать.** Он дропает все таблицы вместе с
+накопленным сырьём, а бэкфилл — это часы закачки и расход месячной квоты OpenDota. Проверку
+отката гоняет CI на заведомо пустой базе; локально достаточно `upgrade head`. Если откат
+действительно нужен — откатывать на одну ревизию (`alembic downgrade -1`), а не до нуля.
 
 Docs API: `http://localhost:8000/docs`.
 

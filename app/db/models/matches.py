@@ -11,11 +11,11 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
-from app.db.models.enums import SeriesFormat
 
 
 class Series(Base, TimestampMixin):
@@ -34,9 +34,15 @@ class Series(Base, TimestampMixin):
             "NOT (is_draw AND winner_team_id IS NOT NULL)",
             name="draw_has_no_winner",
         ),
+        UniqueConstraint("league_id", "valve_series_id", name="uq_series_league_valve_id"),
     )
 
-    series_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: Surrogate key. Valve's series id is NOT globally unique - measured on real data, 19 of
+    #: 2555 series keyed by it alone spanned more than 12 hours and one covered two different
+    #: leagues, i.e. unrelated series had been fused. It is only meaningful within a league,
+    #: so identity is (league_id, valve_series_id) and everything downstream joins on this id.
+    series_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    valve_series_id: Mapped[int | None] = mapped_column(BigInteger)
     league_id: Mapped[int | None] = mapped_column(
         ForeignKey("leagues.league_id", ondelete="SET NULL"), index=True
     )
@@ -45,7 +51,10 @@ class Series(Base, TimestampMixin):
     )
     team_a_id: Mapped[int | None] = mapped_column(ForeignKey("teams.team_id", ondelete="SET NULL"))
     team_b_id: Mapped[int | None] = mapped_column(ForeignKey("teams.team_id", ondelete="SET NULL"))
-    format: Mapped[str] = mapped_column(String(8), default=SeriesFormat.BO3, nullable=False)
+    #: NULL until Liquipedia tells us the stage format (phase 2). Defaulting to bo3 would be
+    #: a fabrication that then silently drives `is_conditional_game`, so unknown stays
+    #: unknown - the same discipline as `winner_team_id` vs `is_draw`.
+    format: Mapped[str | None] = mapped_column(String(8))
     score_a: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     score_b: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     winner_team_id: Mapped[int | None] = mapped_column(BigInteger)
@@ -71,7 +80,9 @@ class Match(Base, TimestampMixin):
     game_in_series: Mapped[int | None] = mapped_column(Integer)
     # True when this map was played only because of the series score (Bo3 game 3, Bo5 games 4-5).
     # Feed it alongside game_in_series or the model learns the format artifact (spec section 5.5).
-    is_conditional_game: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # NULL means not yet computable: it needs the series format, which comes from Liquipedia
+    # in phase 2. False here would be a guess fed straight into the training data.
+    is_conditional_game: Mapped[bool | None] = mapped_column(Boolean)
     radiant_team_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     dire_team_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     radiant_win: Mapped[bool | None] = mapped_column(Boolean)

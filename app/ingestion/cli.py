@@ -4,6 +4,7 @@ The backfill is a long, interruptible job that a human starts and watches, not s
 scheduler should launch on its own - a stray restart would burn the OpenDota monthly quota.
 
     docker compose exec api python -m app.ingestion.cli backfill --pages 5
+    docker compose exec api python -m app.ingestion.cli normalize
     docker compose exec api python -m app.ingestion.cli status
 """
 
@@ -14,6 +15,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import dispose_engine, get_session_factory
 from app.ingestion.clients.opendota import OpenDotaClient
+from app.ingestion.normalize import normalize_pro_matches, normalized_counts
 from app.ingestion.repository import count_raw_matches, get_checkpoint
 from app.ingestion.sources import Checkpoint, RawSource
 from app.ingestion.workers.backfill import run_backfill
@@ -32,17 +34,32 @@ async def cmd_backfill(pages: int, restart: bool) -> None:
     print(f"stopped because: {report.stopped_because}")
 
 
+async def cmd_normalize(limit: int | None) -> None:
+    report = await normalize_pro_matches(get_session_factory(), limit=limit)
+    print(f"raw rows read: {report.raw_seen}")
+    print(f"leagues:       {report.leagues}")
+    print(f"teams:         {report.teams}")
+    print(f"series:        {report.series}")
+    print(f"matches:       {report.matches}")
+    if report.skipped:
+        print(f"skipped:       {report.skipped}")
+
+
 async def cmd_status() -> None:
     async with get_session_factory()() as session:
         cursor = await get_checkpoint(session, Checkpoint.OPENDOTA_PRO_MATCHES)
         summaries = await count_raw_matches(session, RawSource.OPENDOTA_PRO_MATCHES)
         details = await count_raw_matches(session, RawSource.OPENDOTA_MATCH)
         total = await count_raw_matches(session)
+        normalized = await normalized_counts(session)
 
     print(f"checkpoint (oldest match_id seen): {cursor or '-'}")
     print(f"raw pro-match summaries:           {summaries}")
     print(f"raw full match payloads:           {details}")
     print(f"raw rows total:                    {total}")
+    print()
+    for label, count in normalized.items():
+        print(f"{label:<34} {count}")
 
 
 def main() -> None:
@@ -62,6 +79,11 @@ def main() -> None:
         help="ignore the checkpoint and start from the newest matches again",
     )
 
+    normalize = sub.add_parser(
+        "normalize", help="rebuild the normalized layer from stored raw payloads"
+    )
+    normalize.add_argument("--limit", type=int, default=None, help="stop after N raw rows")
+
     sub.add_parser("status", help="show checkpoint and raw row counts")
 
     args = parser.parse_args()
@@ -71,6 +93,8 @@ def main() -> None:
         try:
             if args.command == "backfill":
                 await cmd_backfill(args.pages, args.restart)
+            elif args.command == "normalize":
+                await cmd_normalize(args.limit)
             else:
                 await cmd_status()
         finally:

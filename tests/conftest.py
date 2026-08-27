@@ -11,9 +11,10 @@ from app.db import models  # noqa: F401  - populates Base.metadata
 from app.db.base import Base
 from app.main import create_app
 
-#: Database tests build the whole schema in a throwaway schema and translate every model
-#: into it. Sharing a database with real backfilled data is fine as long as nothing here
-#: can touch it - and a separate schema guarantees that far better than careful DELETEs.
+#: Database tests build the whole schema in a throwaway one. Isolation is done with
+#: `search_path` rather than SQLAlchemy's schema_translate_map, because the latter only
+#: rewrites ORM constructs: hand-written `text()` statements ignore it and would silently
+#: hit the real tables instead. search_path covers both.
 TEST_SCHEMA = "pytest_tmp"
 
 
@@ -30,31 +31,39 @@ async def sessionmaker() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     Skips rather than fails when there is no database: the rest of the suite is DB-free and
     must stay runnable on a laptop with nothing running.
     """
+    url = get_settings().database_url
     try:
         # create_async_engine already raises when the asyncpg driver is missing, so it has
         # to sit inside the guard too.
-        engine = create_async_engine(get_settings().database_url, poolclass=None)
-        async with engine.connect() as connection:
+        admin = create_async_engine(url, poolclass=None)
+        async with admin.connect() as connection:
             await connection.execute(text("select 1"))
     except Exception as exc:
         with suppress(Exception, NameError):
-            await engine.dispose()
+            await admin.dispose()
         pytest.skip(f"database not reachable: {type(exc).__name__}")
 
-    async with engine.begin() as connection:
+    async with admin.begin() as connection:
         await connection.execute(text(f"drop schema if exists {TEST_SCHEMA} cascade"))
         await connection.execute(text(f"create schema {TEST_SCHEMA}"))
 
-    scoped = engine.execution_options(schema_translate_map={None: TEST_SCHEMA})
+    # Every connection from this engine resolves unqualified names into the test schema,
+    # so ORM statements and raw text() alike stay off the real tables.
+    scoped = create_async_engine(
+        url,
+        poolclass=None,
+        connect_args={"server_settings": {"search_path": TEST_SCHEMA}},
+    )
     async with scoped.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
 
     try:
         yield async_sessionmaker(scoped, expire_on_commit=False)
     finally:
-        async with engine.begin() as connection:
+        await scoped.dispose()
+        async with admin.begin() as connection:
             await connection.execute(text(f"drop schema if exists {TEST_SCHEMA} cascade"))
-        await engine.dispose()
+        await admin.dispose()
 
 
 @pytest.fixture
