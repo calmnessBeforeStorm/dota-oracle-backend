@@ -14,6 +14,10 @@ class RawSource(StrEnum):
     OPENDOTA_MATCH = "opendota_match"  # GET /matches/{id}, the full payload
     STRATZ_MATCH = "stratz_match"
     STEAM_MATCH_DETAILS = "steam_match_details"
+    #: GetLiveLeagueGames, the primary live channel (spec section 2.4/C1).
+    STEAM_LIVE_LEAGUE_GAMES = "live_league_games"
+    #: GetRealtimeStats, only reachable when a server_steam_id is known.
+    STEAM_REALTIME_STATS = "realtime_stats"
 
 
 class Checkpoint(StrEnum):

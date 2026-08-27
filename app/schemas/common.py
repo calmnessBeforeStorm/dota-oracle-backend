@@ -27,7 +27,8 @@ class SeriesBrief(BaseModel):
     """
 
     series_id: int | None = None
-    format: SeriesFormat = SeriesFormat.BO1
+    #: None until the stage - and therefore the format - is known (spec section 5.5).
+    format: SeriesFormat | None = None
     score_a: int = 0
     score_b: int = 0
     winner_team_id: int | None = None
@@ -49,6 +50,8 @@ class LiveMatch(BaseModel):
     dire_score: int = 0
     p_radiant: float = Field(ge=0.0, le=1.0)
     model_version: str
+    minute: int = 0
+    tier: str = "unknown"
     series: SeriesBrief
     stream_delay_s: int = Field(
         default=0,
