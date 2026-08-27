@@ -4,7 +4,7 @@ The backfill is a long, interruptible job that a human starts and watches, not s
 scheduler should launch on its own - a stray restart would burn the OpenDota monthly quota.
 
     docker compose exec api python -m app.ingestion.cli backfill --pages 5
-    docker compose exec api python -m app.ingestion.cli details --limit 200
+    docker compose exec api python -m app.ingestion.cli details --source stratz --limit 200
     docker compose exec api python -m app.ingestion.cli normalize
     docker compose exec api python -m app.ingestion.cli link-stages
     docker compose exec api python -m app.ingestion.cli featurize
@@ -36,15 +36,21 @@ from app.ingestion.repository import count_raw_matches, get_checkpoint
 from app.ingestion.sources import Checkpoint, RawSource
 from app.ingestion.stages import link_series_to_stages
 from app.ingestion.workers.backfill import run_backfill
-from app.ingestion.workers.details import count_missing_details, run_details_backfill
+from app.ingestion.workers.details import (
+    DETAIL_SOURCES,
+    count_missing_details,
+    run_details_backfill,
+)
 
 #: ~100 matches per call at 60 req/min, so a page costs about a second of wall clock.
 PAGE_SIZE_HINT = 100
 
-#: Measured, not the rate limit. A full match payload is large and OpenDota takes ~3.5s to
-#: build it, so detail throughput is bound by response time rather than by the 60 req/min
-#: allowance: 150 maps took 9m04s, i.e. about 17 a minute.
-DETAIL_FETCH_PER_MINUTE = 16.5
+#: Measured per source, not taken from the documented rate limit. OpenDota takes ~3.5s to
+#: build a full match payload, so its throughput is bound by response time rather than by the
+#: 60 req/min allowance: 150 maps took 9m04s, about 17 a minute - and the daily allowance
+#: stops the run long before the day is out. STRATZ is bound by its hourly allowance instead,
+#: ~2000 requests an hour, which is what a long run converges to.
+DETAIL_FETCH_PER_MINUTE = {"opendota": 16.5, "stratz": 33.0}
 
 
 async def cmd_backfill(pages: int, restart: bool) -> None:
@@ -57,20 +63,27 @@ async def cmd_backfill(pages: int, restart: bool) -> None:
     print(f"stopped because: {report.stopped_because}")
 
 
-async def cmd_details(limit: int, oldest_first: bool) -> None:
-    async with OpenDotaClient() as client:
+async def cmd_details(limit: int, oldest_first: bool, source: str) -> None:
+    raw_source, client_type = DETAIL_SOURCES[source]
+
+    async with client_type() as client:
         report = await run_details_backfill(
-            client, get_session_factory(), limit=limit, newest_first=not oldest_first
+            client,
+            get_session_factory(),
+            limit=limit,
+            newest_first=not oldest_first,
+            source=raw_source,
         )
 
+    print(f"source:    {source}")
     print(f"requested: {report.requested}")
     print(f"fetched:   {report.fetched}")
     print(f"failed:    {report.failed}")
     print(f"stopped:   {report.stopped_because}")
     print(f"remaining: {report.remaining}")
     if report.remaining:
-        hours = report.remaining / DETAIL_FETCH_PER_MINUTE / 60
-        print(f"           (~{hours:.1f} h at ~{DETAIL_FETCH_PER_MINUTE} maps/min)")
+        rate = DETAIL_FETCH_PER_MINUTE[source]
+        print(f"           (~{report.remaining / rate / 60:.1f} h at ~{rate} maps/min)")
 
 
 async def cmd_normalize(limit: int | None) -> None:
@@ -198,10 +211,12 @@ async def cmd_link_stages() -> None:
             print(f"  {count:>5}  {reason}")
 
 
-async def cmd_featurize(limit: int | None) -> None:
+async def cmd_featurize(limit: int | None, rebuild: bool) -> None:
     """Build match_snapshots from stored match payloads. Touches no network."""
-    report = await featurize(get_session_factory(), limit=limit)
+    report = await featurize(get_session_factory(), limit=limit, rebuild=rebuild)
 
+    if rebuild:
+        print(f"rows dropped: {report.deleted}")
     print(f"matches seen: {report.matches_seen}")
     print(f"matches used: {report.matches_used}")
     print(f"snapshots:    {report.snapshots}")
@@ -228,19 +243,29 @@ async def cmd_status() -> None:
     async with get_session_factory()() as session:
         cursor = await get_checkpoint(session, Checkpoint.OPENDOTA_PRO_MATCHES)
         summaries = await count_raw_matches(session, RawSource.OPENDOTA_PRO_MATCHES)
-        details = await count_raw_matches(session, RawSource.OPENDOTA_MATCH)
         total = await count_raw_matches(session)
         normalized = await normalized_counts(session)
-        missing = await count_missing_details(session)
+        # Per source, never merged: a map fetched from OpenDota is still missing from
+        # STRATZ, and one shared counter would call the backfill finished with half of it
+        # unrun.
+        per_source = {
+            name: (
+                await count_raw_matches(session, raw_source),
+                await count_missing_details(session, raw_source),
+            )
+            for name, (raw_source, _) in DETAIL_SOURCES.items()
+        }
 
     print(f"checkpoint (oldest match_id seen): {cursor or '-'}")
     print(f"raw pro-match summaries:           {summaries}")
-    print(f"raw full match payloads:           {details}")
     print(f"raw rows total:                    {total}")
+    print()
+    for name, (fetched, missing) in per_source.items():
+        print(f"{name + ' match payloads':<34} {fetched}")
+        print(f"{name + ' maps still missing':<34} {missing}")
     print()
     for label, count in normalized.items():
         print(f"{label:<34} {count}")
-    print(f"{'maps still missing details':<34} {missing}")
 
 
 def main() -> None:
@@ -265,7 +290,13 @@ def main() -> None:
     )
     normalize.add_argument("--limit", type=int, default=None, help="stop after N raw rows")
 
-    details = sub.add_parser("details", help="fetch /matches/{id} payloads for maps that lack one")
+    details = sub.add_parser("details", help="fetch per-minute series for maps that lack them")
+    details.add_argument(
+        "--source",
+        choices=tuple(DETAIL_SOURCES),
+        default="stratz",
+        help="where to fetch from (default: stratz, which is what the training set uses)",
+    )
     details.add_argument(
         "--limit", type=int, default=100, help="maps to fetch, one API call each (default: 100)"
     )
@@ -312,6 +343,14 @@ def main() -> None:
 
     features = sub.add_parser("featurize", help="build match_snapshots from stored parsed matches")
     features.add_argument("--limit", type=int, default=None, help="stop after N matches")
+    features.add_argument(
+        "--rebuild",
+        action="store_true",
+        help=(
+            "empty match_snapshots first; needed whenever the feature set or the source "
+            "changes, since rows are otherwise only upserted"
+        ),
+    )
 
     sub.add_parser(
         "prematch",
@@ -328,7 +367,7 @@ def main() -> None:
             if args.command == "backfill":
                 await cmd_backfill(args.pages, args.restart)
             elif args.command == "details":
-                await cmd_details(args.limit, args.oldest_first)
+                await cmd_details(args.limit, args.oldest_first, args.source)
             elif args.command == "map-leagues":
                 await cmd_map_leagues(args.limit, args.apply, args.escalate)
             elif args.command == "refresh-meta":
@@ -338,7 +377,7 @@ def main() -> None:
             elif args.command == "prematch":
                 await cmd_prematch()
             elif args.command == "featurize":
-                await cmd_featurize(args.limit)
+                await cmd_featurize(args.limit, args.rebuild)
             elif args.command == "link-stages":
                 await cmd_link_stages()
             elif args.command == "liquipedia":

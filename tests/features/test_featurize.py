@@ -120,3 +120,61 @@ class TestFilters:
         report = await featurize(sessionmaker)
 
         assert report.skipped == {"no outcome to label with": 1}
+
+
+class TestRebuild:
+    async def test_rebuild_clears_rows_the_new_run_will_not_write(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Rows are only ever upserted, so a change to the feature set or to the source
+        leaves the old ones sitting next to the new. That is how one column ends up holding
+        two different quantities.
+        """
+        async with sessionmaker() as seed_session:
+            seed_session.add(Match(match_id=555, start_time=datetime(2026, 7, 1, tzinfo=UTC)))
+            await seed_session.commit()
+            seed_session.add(
+                MatchSnapshot(
+                    match_id=555,
+                    minute=0,
+                    # The shape a row built before the switch had: 30 features, gold_adv
+                    # meaning earned gold.
+                    features={"roshan_kills": 1.0},
+                    radiant_win=True,
+                )
+            )
+            await seed_session.commit()
+
+        await seed(session, [stratz_match()])
+        report = await featurize(sessionmaker, rebuild=True)
+
+        assert report.deleted == 1
+        async with sessionmaker() as check:
+            stale = (
+                (await check.execute(select(MatchSnapshot).where(MatchSnapshot.match_id == 555)))
+                .scalars()
+                .all()
+            )
+        assert stale == []
+        assert report.snapshots > 0
+
+    async def test_without_rebuild_existing_rows_survive(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with sessionmaker() as seed_session:
+            seed_session.add(Match(match_id=555, start_time=datetime(2026, 7, 1, tzinfo=UTC)))
+            await seed_session.commit()
+            seed_session.add(MatchSnapshot(match_id=555, minute=0, features={}, radiant_win=True))
+            await seed_session.commit()
+
+        await seed(session, [stratz_match()])
+        report = await featurize(sessionmaker)
+
+        assert report.deleted == 0
+        async with sessionmaker() as check:
+            count = (
+                (await check.execute(select(MatchSnapshot).where(MatchSnapshot.match_id == 555)))
+                .scalars()
+                .all()
+            )
+        assert len(count) == 1

@@ -24,7 +24,7 @@ docs/superpowers/specs/2026-08-27-stratz-adapter-design.md.
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -50,6 +50,7 @@ class FeaturizeReport:
     matches_seen: int = 0
     matches_used: int = 0
     snapshots: int = 0
+    deleted: int = 0
     skipped: dict[str, int] = field(default_factory=dict)
 
     def skip(self, reason: str) -> None:
@@ -60,6 +61,7 @@ class FeaturizeReport:
             "matches_seen": self.matches_seen,
             "matches_used": self.matches_used,
             "snapshots": self.snapshots,
+            "deleted": self.deleted,
             "skipped": self.skipped,
         }
 
@@ -155,10 +157,26 @@ async def featurize(
     session_factory: async_sessionmaker[AsyncSession],
     batch_size: int = 50,
     limit: int | None = None,
+    rebuild: bool = False,
 ) -> FeaturizeReport:
-    """Turn stored match payloads into snapshots."""
+    """Turn stored match payloads into snapshots.
+
+    `rebuild` empties the table first. Rows are only ever upserted, so without it a change
+    to the feature set or to the source leaves the old rows in place next to the new ones -
+    which is how a table ends up holding two different quantities in the same column. The
+    rows are fully derived from `raw_matches`, so dropping them costs a re-run and nothing
+    else.
+    """
     report = FeaturizeReport()
     offset = 0
+
+    if rebuild:
+        async with session_factory() as session:
+            existing = await session.execute(select(func.count()).select_from(MatchSnapshot))
+            report.deleted = int(existing.scalar_one())
+            await session.execute(delete(MatchSnapshot))
+            await session.commit()
+        log.info("featurize.cleared", deleted=report.deleted)
 
     while True:
         async with session_factory() as session:

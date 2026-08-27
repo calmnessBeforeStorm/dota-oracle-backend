@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models.matches import Match, MatchObjective, MatchPlayer, Series
@@ -396,3 +396,106 @@ class TestBothSourcesNormalize:
                 await check.execute(select(Match.series_id).where(Match.match_id == 42))
             ).scalar_one()
         assert after == before
+
+
+class TestLargeBatches:
+    async def test_more_rows_than_postgres_will_bind_in_one_statement(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Postgres caps a statement at 32767 bind parameters, and one row spends one per
+        column. A few hundred maps carry thousands of objectives between them, so the
+        insert has to be chunked - this used to blow up on a real normalize run.
+        """
+        payloads = [
+            dict(
+                STRATZ_PAYLOAD,
+                id=match_id,
+                towerDeaths=[
+                    {"time": 60 * i, "npcId": 16 + (i % 9), "isRadiant": True} for i in range(30)
+                ],
+            )
+            for match_id in range(1000, 1300)
+        ]
+        await upsert_raw_matches(
+            session,
+            RawSource.OPENDOTA_PRO_MATCHES,
+            [summary(p["id"]) for p in payloads],
+        )
+        await session.commit()
+        await normalize_pro_matches(sessionmaker)
+        await upsert_raw_matches(session, RawSource.STRATZ_MATCH, payloads)
+        await session.commit()
+
+        report = await normalize_match_details(sessionmaker)
+
+        assert report.match_objectives == 300 * 30
+        async with sessionmaker() as check:
+            stored = (
+                await check.execute(select(func.count()).select_from(MatchObjective))
+            ).scalar_one()
+        assert stored == 300 * 30
+
+
+class TestSourcePrecedence:
+    async def test_a_map_held_by_both_providers_is_normalized_once_from_stratz(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Both payloads describe the same map, so feeding both into one insert makes
+        Postgres refuse the statement outright. STRATZ wins because it is the source the
+        snapshots are built from - the normalized tables should describe the same match.
+        """
+        await upsert_raw_matches(session, RawSource.OPENDOTA_PRO_MATCHES, [summary(42)])
+        await session.commit()
+        await normalize_pro_matches(sessionmaker)
+
+        opendota_payload = {
+            "match_id": 42,
+            "version": 21,
+            "patch": 60,
+            "players": [
+                {"player_slot": 0, "account_id": 999, "hero_id": 1},
+                {"player_slot": 128, "account_id": 998, "hero_id": 2},
+            ],
+            "picks_bans": [],
+            "objectives": [],
+        }
+        await upsert_raw_matches(session, RawSource.OPENDOTA_MATCH, [opendota_payload])
+        await upsert_raw_matches(session, RawSource.STRATZ_MATCH, [STRATZ_PAYLOAD])
+        await session.commit()
+
+        report = await normalize_match_details(sessionmaker)
+
+        assert report.raw_seen == 1  # one map, not one row per provider
+        async with sessionmaker() as check:
+            accounts = (await check.execute(select(MatchPlayer.account_id))).scalars().all()
+        assert sorted(a for a in accounts if a) == [111, 222]  # the STRATZ roster
+
+    async def test_a_map_only_opendota_has_is_still_normalized(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The fallback matters: 685 maps were fetched from OpenDota before the switch."""
+        await upsert_raw_matches(session, RawSource.OPENDOTA_PRO_MATCHES, [summary(43)])
+        await session.commit()
+        await normalize_pro_matches(sessionmaker)
+        await upsert_raw_matches(
+            session,
+            RawSource.OPENDOTA_MATCH,
+            [
+                {
+                    "match_id": 43,
+                    "version": 21,
+                    "patch": 60,
+                    "players": [{"player_slot": 0, "account_id": 999, "hero_id": 1}],
+                    "picks_bans": [],
+                    "objectives": [],
+                }
+            ],
+        )
+        await session.commit()
+
+        report = await normalize_match_details(sessionmaker)
+
+        assert report.match_players == 1
+        async with sessionmaker() as check:
+            row = (await check.execute(select(Match).where(Match.match_id == 43))).scalar_one()
+        assert row.patch == 60  # OpenDota can supply a patch; STRATZ cannot

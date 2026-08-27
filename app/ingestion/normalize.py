@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import case, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -523,9 +523,17 @@ def parse_stratz_match_detail(payload: dict[str, Any]) -> dict[str, list[dict[st
 _DETAIL_PARSERS: dict[
     str, tuple[Callable[[dict[str, Any]], dict[str, list[dict[str, Any]]]], str, str | None, str]
 ] = {
-    str(RawSource.OPENDOTA_MATCH): (parse_match_detail, "match_id", "patch", "version"),
     str(RawSource.STRATZ_MATCH): (parse_stratz_match_detail, "id", None, "parsedDateTime"),
+    str(RawSource.OPENDOTA_MATCH): (parse_match_detail, "match_id", "patch", "version"),
 }
+
+#: Which payload wins when a map has been fetched from both. STRATZ first: it is the source
+#: the training set is built from, so the normalized tables describe the same match the
+#: snapshots do. Declaration order in `_DETAIL_PARSERS` is the precedence.
+_SOURCE_RANK = case(
+    {source: rank for rank, source in enumerate(_DETAIL_PARSERS)},
+    value=RawMatch.source,
+)
 
 
 async def normalize_match_details(
@@ -539,10 +547,15 @@ async def normalize_match_details(
 
     while True:
         async with session_factory() as session:
+            # One payload per map, not one per stored row. A map fetched from both
+            # providers has two, and feeding both into the same insert makes Postgres
+            # refuse the statement - the second row hits the same (match_id, player_slot)
+            # the first one did.
             statement = (
                 select(RawMatch.source, RawMatch.payload)
+                .distinct(RawMatch.match_id)
                 .where(RawMatch.source.in_(list(_DETAIL_PARSERS)))
-                .order_by(RawMatch.match_id, RawMatch.source)
+                .order_by(RawMatch.match_id, _SOURCE_RANK)
                 .offset(offset)
                 .limit(batch_size if limit is None else min(batch_size, limit - offset))
             )
@@ -605,18 +618,30 @@ async def normalize_match_details(
     return report
 
 
+#: Postgres refuses a statement with more than 32767 bind parameters, and one row spends one
+#: per column. A batch of detail payloads easily clears that - a few hundred maps carry
+#: thousands of objectives between them - so inserts are chunked to stay under it. The margin
+#: is there because the limit is per statement, not per row list.
+_MAX_BIND_PARAMS = 30000
+
+
 async def _upsert_composite(
     session: AsyncSession, model: Any, rows: list[dict[str, Any]], key: list[str]
 ) -> int:
     if not rows:
         return 0
-    statement = insert(model).values(rows)
+
     updatable = sorted(set(rows[0]) - set(key))
-    statement = statement.on_conflict_do_update(
-        index_elements=key,
-        set_={name: getattr(statement.excluded, name) for name in updatable},
-    )
-    await session.execute(statement)
+    chunk_size = max(1, _MAX_BIND_PARAMS // len(rows[0]))
+
+    for start in range(0, len(rows), chunk_size):
+        statement = insert(model).values(rows[start : start + chunk_size])
+        statement = statement.on_conflict_do_update(
+            index_elements=key,
+            set_={name: getattr(statement.excluded, name) for name in updatable},
+        )
+        await session.execute(statement)
+
     return len(rows)
 
 
