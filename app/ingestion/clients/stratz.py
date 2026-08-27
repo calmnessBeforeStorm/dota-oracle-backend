@@ -45,18 +45,24 @@ query LeagueMatches($leagueId: Int!, $take: Int!, $skip: Int!) {
 #: returns nothing. The end-of-match masks (`towerStatusRadiant` and friends) are absent for
 #: a stronger reason - they describe the final state, and a query that does not carry them
 #: cannot leak them into a minute-15 row (spec section 12).
+#:
+#: The match-level `radiantKills` / `direKills` per-minute arrays are absent for a third
+#: reason: they over-count. Measured over 20 team-sides, their totals matched Valve's own
+#: `players[].kills` only 15 times and were high by exactly one in the other five, while
+#: `players[].stats.killEvents` matched all 20. Kills are therefore counted from the
+#: per-player events, the same way the OpenDota adapter reads `kills_log`.
 MATCH_QUERY = """
 query Match($id: Long!) {
   match(id: $id) {
     id didRadiantWin durationSeconds startDateTime endDateTime parsedDateTime
     leagueId radiantTeamId direTeamId gameVersionId
-    radiantNetworthLeads radiantExperienceLeads radiantKills direKills
+    radiantNetworthLeads radiantExperienceLeads
     pickBans { isPick heroId bannedHeroId isRadiant order }
     players {
       steamAccountId heroId isRadiant playerSlot
       kills deaths assists numLastHits numDenies
       networth goldPerMinute experiencePerMinute leaverStatus lane
-      stats { networthPerMinute }
+      stats { networthPerMinute killEvents { time } }
     }
     towerDeaths { time npcId isRadiant }
   }

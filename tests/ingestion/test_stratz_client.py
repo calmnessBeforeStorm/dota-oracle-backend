@@ -55,8 +55,7 @@ async def test_match_query_asks_for_every_field_the_adapter_needs() -> None:
     for field in (
         "radiantNetworthLeads",
         "radiantExperienceLeads",
-        "radiantKills",
-        "direKills",
+        "killEvents",
         "networthPerMinute",
         "towerDeaths",
         "didRadiantWin",

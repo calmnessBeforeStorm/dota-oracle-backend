@@ -52,11 +52,16 @@ def _at(series: list[int] | None, minute: int) -> int:
     return int(series[min(minute, len(series) - 1)])
 
 
-def _kills_through(series: list[int] | None, minute: int) -> int:
-    """The kill arrays hold per-minute increments, so the score is their running sum."""
-    if not series:
-        return 0
-    return sum(int(value) for value in series[: minute + 1])
+def _kills_before(player: dict[str, Any], minute: int) -> int:
+    """Kills this player had made by `minute`, from the per-player event list.
+
+    Not from the match-level `radiantKills` / `direKills` arrays: measured over 20 team
+    sides those totals were high by exactly one on five of them, while these events matched
+    Valve's own `players[].kills` on all twenty. Same window as the OpenDota adapter's
+    `kills_log`, so the two sources can be compared minute for minute.
+    """
+    events = (player.get("stats") or {}).get("killEvents") or []
+    return len([e for e in events if int(e.get("time", 0)) <= minute * 60])
 
 
 def _players(match: dict[str, Any], radiant: bool) -> list[dict[str, Any]]:
@@ -66,13 +71,12 @@ def _players(match: dict[str, Any], radiant: bool) -> list[dict[str, Any]]:
 def _team_state_at(
     match: dict[str, Any], minute: int, radiant: bool, buildings: BuildingState
 ) -> TeamState:
+    players = _players(match, radiant)
     net_worths = tuple(
-        _at((player.get("stats") or {}).get("networthPerMinute"), minute)
-        for player in _players(match, radiant)
+        _at((player.get("stats") or {}).get("networthPerMinute"), minute) for player in players
     )
-    kills = match.get("radiantKills") if radiant else match.get("direKills")
     return TeamState(
-        score=_kills_through(kills, minute),
+        score=sum(_kills_before(player, minute) for player in players),
         net_worth=sum(net_worths),
         towers_alive=buildings.towers,
         barracks_alive=buildings.barracks,

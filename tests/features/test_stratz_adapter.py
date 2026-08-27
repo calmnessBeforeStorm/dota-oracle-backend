@@ -44,11 +44,32 @@ class TestAlignment:
         )
         assert snapshot_at(match, 7).radiant.net_worth == expected
 
-    def test_score_is_the_cumulative_sum_of_the_kill_array(self, match: dict[str, Any]) -> None:
+    def test_score_counts_per_player_kill_events(self, match: dict[str, Any]) -> None:
+        """Not the match-level radiantKills array - it over-counts, see the query comment
+        in app/ingestion/clients/stratz.py."""
         for minute in (0, 5, 12):
             state = snapshot_at(match, minute)
-            assert state.radiant.score == sum(match["radiantKills"][: minute + 1])
-            assert state.dire.score == sum(match["direKills"][: minute + 1])
+            for radiant, score in ((True, state.radiant.score), (False, state.dire.score)):
+                expected = len(
+                    [
+                        e
+                        for p in match["players"]
+                        if p["isRadiant"] is radiant
+                        for e in (p["stats"]["killEvents"] or [])
+                        if e["time"] <= minute * 60
+                    ]
+                )
+                assert score == expected
+
+    def test_every_kill_event_is_accounted_for(self, match: dict[str, Any]) -> None:
+        """The event list must reconcile with Valve's own per-player totals - that is what
+        made it the better of the two kill sources STRATZ offers.
+
+        Note this is the whole list, not the last snapshot: the score window closes at
+        `minute * 60`, so kills in the final part-minute belong to no snapshot at all.
+        """
+        for player in match["players"]:
+            assert len(player["stats"]["killEvents"] or []) == player["kills"]
 
     def test_gold_adv_equals_the_net_worth_difference(self, match: dict[str, Any]) -> None:
         """Both come from STRATZ and both are net worth, so unlike the OpenDota path they
