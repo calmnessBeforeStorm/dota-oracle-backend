@@ -58,6 +58,30 @@ services:
       - ./tests:/app/tests
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
+  # Phase 4 training. Not started by `docker compose up` - it is a job a human runs and
+  # watches, not a service:
+  #     docker compose run --rm trainer python -m app.ml.cli train
+  trainer:
+    profiles: ["ml"]
+    build:
+      context: .
+      target: ml
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MODEL_DIR: /app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+      - ./tests:/app/tests
+      # Trained boosters and their model cards land on the host, next to the repo.
+      - ./models:/app/models
+
   worker:
     build:
       context: .
