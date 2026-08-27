@@ -112,45 +112,100 @@ async def _prematch_for(
     return {int(match_id): (dict(features), float(prior)) for match_id, features, prior in rows}
 
 
-async def _contexts_for(session: AsyncSession, match_ids: list[int]) -> dict[int, MatchContext]:
+async def contexts_for(session: AsyncSession, match_ids: list[int]) -> dict[int, MatchContext]:
+    """Series-level facts about each map, as they stood **before** that map was played.
+
+    The score must not be read off `series.score_a` / `score_b`. Those are the *final*
+    scores, so a map from a series that ended 2-0 would announce "+2" from its first
+    snapshot - which is only possible if that side won the very map being predicted. That
+    was measured on the real table: `series_wins_diff = +2` meant Radiant won 100% of the
+    time (spec section 12).
+
+    It is reconstructed instead from the sibling maps that came earlier in the series, and
+    attributed to *teams* rather than to sides: the sides swap between maps, and a score
+    that stays with the side reads as the opposite of what happened.
+    """
     rows = (
         await session.execute(
             select(
                 Match.match_id,
+                Match.series_id,
                 Match.game_in_series,
                 Match.is_conditional_game,
                 Match.radiant_team_id,
+                Match.dire_team_id,
                 Series.format,
-                Series.team_a_id,
-                Series.score_a,
-                Series.score_b,
             )
             .join(Series, Series.series_id == Match.series_id, isouter=True)
             .where(Match.match_id.in_(match_ids))
         )
     ).all()
 
+    series_ids = {int(r[1]) for r in rows if r[1] is not None}
+    earlier = await _wins_before(session, series_ids)
+
     contexts: dict[int, MatchContext] = {}
     for (
         match_id,
+        series_id,
         game_in_series,
         is_conditional,
         radiant_team_id,
+        dire_team_id,
         fmt,
-        team_a_id,
-        score_a,
-        score_b,
     ) in rows:
-        # Series scores are stored against team A; the snapshot needs them by side.
-        radiant_is_a = radiant_team_id is not None and radiant_team_id == team_a_id
+        position = int(game_in_series or 1)
+        tally = earlier.get(int(series_id), {}) if series_id is not None else {}
+        radiant_wins = sum(
+            1
+            for (team_id, at) in tally
+            if at < position and team_id == radiant_team_id and tally[(team_id, at)]
+        )
+        dire_wins = sum(
+            1
+            for (team_id, at) in tally
+            if at < position and team_id == dire_team_id and tally[(team_id, at)]
+        )
         contexts[int(match_id)] = MatchContext(
             series_format=SeriesFormat(fmt) if fmt else None,
-            game_in_series=int(game_in_series or 1),
+            game_in_series=position,
             is_conditional_game=is_conditional,
-            radiant_series_wins=int(score_a if radiant_is_a else score_b or 0),
-            dire_series_wins=int(score_b if radiant_is_a else score_a or 0),
+            radiant_series_wins=radiant_wins,
+            dire_series_wins=dire_wins,
         )
     return contexts
+
+
+async def _wins_before(
+    session: AsyncSession, series_ids: set[int]
+) -> dict[int, dict[tuple[int, int], bool]]:
+    """Per series: `(winning_team_id, game_in_series) -> True` for every decided map.
+
+    A map still in progress has `radiant_win` NULL and contributes nothing. Counting it
+    either way would invent a result (invariant 12).
+    """
+    if not series_ids:
+        return {}
+
+    rows = (
+        await session.execute(
+            select(
+                Match.series_id,
+                Match.game_in_series,
+                Match.radiant_team_id,
+                Match.dire_team_id,
+                Match.radiant_win,
+            ).where(Match.series_id.in_(series_ids), Match.radiant_win.is_not(None))
+        )
+    ).all()
+
+    tally: dict[int, dict[tuple[int, int], bool]] = {}
+    for series_id, position, radiant_team_id, dire_team_id, radiant_win in rows:
+        winner = radiant_team_id if radiant_win else dire_team_id
+        if winner is None or position is None:
+            continue
+        tally.setdefault(int(series_id), {})[(int(winner), int(position))] = True
+    return tally
 
 
 async def featurize(
@@ -227,7 +282,7 @@ async def _featurize_batch(
 
     async with session_factory() as session:
         match_ids = [int(p["id"]) for p in usable]
-        contexts = await _contexts_for(session, match_ids)
+        contexts = await contexts_for(session, match_ids)
         prematch = await _prematch_for(session, match_ids)
 
         rows: list[dict[str, Any]] = []
