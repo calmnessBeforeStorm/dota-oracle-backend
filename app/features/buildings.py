@@ -11,6 +11,10 @@ minute in question. That is what `state_at` does.
 Live data needs no replay - Steam states the current bitmask directly - and, usefully, it is
 the same bitmask layout OpenDota uses for the final state. One decoder serves both, which is
 one less place for train and serve to drift apart.
+
+STRATZ is the third dialect: it names a destroyed building by npc id in `towerDeaths` rather
+than by npc name. Only the naming differs, so `parse_npc_id` translates and the same replay,
+the same `BuildingState` and the same `apply_kill` carry it from there.
 """
 
 import re
@@ -117,6 +121,67 @@ def state_at(objectives: list[dict[str, Any]], minute: int, radiant: bool) -> Bu
         if int(event.get("time", 0)) >= cutoff:
             continue
         kill = parse_building_key(str(event.get("key") or ""))
+        if kill is not None and kill.is_radiant is radiant:
+            state = apply_kill(state, kill)
+
+    return state
+
+
+def _towers(first: int, is_radiant: bool) -> dict[int, BuildingKill]:
+    """Nine lane towers, numbered tier-major: t1 top/mid/bot, then t2, then t3."""
+    return {
+        first + tier * 3 + index: BuildingKill(is_radiant, "tower", lane)
+        for tier in range(3)
+        for index, lane in enumerate(LANES)
+    }
+
+
+def _barracks(first: int, is_radiant: bool) -> dict[int, BuildingKill]:
+    """Six racks: melee top/mid/bot, then ranged top/mid/bot."""
+    return {
+        first + kind * 3 + index: BuildingKill(is_radiant, "barracks", lane)
+        for kind in range(2)
+        for index, lane in enumerate(LANES)
+    }
+
+
+#: STRATZ names buildings by `npcId` in `towerDeaths` rather than by the npc name OpenDota
+#: puts in its objectives log. The table was read off the two sources side by side on real
+#: matches; filtering `towerDeaths` through it reproduces OpenDota's `building_kill` count
+#: exactly. Ids 36 and 37 fire repeatedly late in a game and have no counterpart in the
+#: objectives log at all - whatever they are, they are not a building we track, and an
+#: unknown id must leave the state alone rather than destroy something that still stands.
+NPC_BUILDINGS: dict[int, BuildingKill] = {
+    **_towers(16, True),
+    25: BuildingKill(True, "tower", BASE),
+    **_towers(26, False),
+    35: BuildingKill(False, "tower", BASE),
+    **_barracks(38, True),
+    **_barracks(44, False),
+    50: BuildingKill(True, "ancient", BASE),
+    51: BuildingKill(False, "ancient", BASE),
+}
+
+
+def parse_npc_id(npc_id: int) -> BuildingKill | None:
+    """Read a STRATZ `towerDeaths[].npcId`. None for anything not in the table."""
+    return NPC_BUILDINGS.get(int(npc_id))
+
+
+def state_at_npc(deaths: list[dict[str, Any]], minute: int, radiant: bool) -> BuildingState:
+    """Building state of one side at the end of the given minute, from STRATZ events.
+
+    Same contract as `state_at`: only events at or before that minute are applied. The side
+    comes from the npc id rather than from the event's own `isRadiant` field, so the two
+    disagreeing cannot silently corrupt the state.
+    """
+    state = full_base()
+    cutoff = (minute + 1) * 60
+
+    for event in deaths:
+        if int(event.get("time", 0)) >= cutoff:
+            continue
+        kill = parse_npc_id(event.get("npcId") or 0)
         if kill is not None and kill.is_radiant is radiant:
             state = apply_kill(state, kill)
 
