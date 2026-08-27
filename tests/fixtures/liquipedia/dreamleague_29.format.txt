@@ -1,0 +1,25 @@
+== Format ==
+*'''Group Stage''' ''(May 13 - May 17)''
+**Two single round-robin groups of eight teams each
+**All series are {{Abbr/Bo3}}
+**{{Bgcolortext|up|Top four teams}} from each group advance to upper bracket playoffs
+**{{Bgcolortext|stay|5th and 6th place teams}} from each group advance to lower bracket playoffs
+**{{Bgcolortext|down|Remaining teams}} are eliminated
+**{{collapsible rules|2|title=Click here for Group Stage tiebreaker rules|texts=
+*If the tie is over a position of significance;
+**Two teams - a {{Abbr/Bo3}} will be played 
+**Three teams or more - a {{Abbr/Bo1}} round-robin will be played
+***If the tiebreaker does not resolve following the first round of the round robin
+****Three teams - the tiebreaker will be replayed
+****Four teams or more - the matrix listed below will be used to resolve the tie, adding the information from the tiebreaker matches to those gathered during the group stage
+*For ties that are not over positions of significance (in order of importance):
+*#Number of 2-0 series
+*#Neustadtl score
+*#Head-to-head record between the tied participants taking only game score into account
+*#Record vs the first team below the tied teams, continuing to each subsequent team below the tied teams til the tie is resolved
+*#1v1 tiebreakers
+}}
+
+*'''Playoffs''' ''(May 19 - May 24)''
+**Double-elimination bracket
+**Grand Final is {{Abbr/Bo5}}, all other matches are {{Abbr/Bo3}}

@@ -15,7 +15,9 @@ import asyncio
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import dispose_engine, get_session_factory
+from app.ingestion.clients.liquipedia import LiquipediaClient
 from app.ingestion.clients.opendota import OpenDotaClient
+from app.ingestion.liquipedia.wikitext import parse_stage_formats
 from app.ingestion.normalize import (
     normalize_match_details,
     normalize_pro_matches,
@@ -80,6 +82,31 @@ async def cmd_normalize(limit: int | None) -> None:
             print(f"  skipped:       {report.skipped}")
 
 
+async def cmd_liquipedia(page: str) -> None:
+    """Show what we can read off a tournament page.
+
+    The tier and format mapping is semi-manual by design (spec section 3), so this exists to
+    put the evidence in front of a human before anything is written to the database.
+    """
+    async with LiquipediaClient() as client:
+        wikitext = await client.page_wikitext(page)
+
+    if not wikitext:
+        print(f"page not found: {page}")
+        return
+
+    stages = parse_stage_formats(wikitext)
+    if not stages:
+        print("no stage formats found - the page may word its Format section differently")
+        return
+
+    print(f"{page}: {len(stages)} stages")
+    for stage in stages:
+        flag = "  <- mixed formats, confirm by hand" if stage.is_ambiguous else ""
+        print(f"  {stage.default_format.value:<4} {stage.stage_type.value:<8} {stage.name}{flag}")
+        print(f"       {stage.evidence[:110]}")
+
+
 async def cmd_status() -> None:
     async with get_session_factory()() as session:
         cursor = await get_checkpoint(session, Checkpoint.OPENDOTA_PRO_MATCHES)
@@ -131,6 +158,11 @@ def main() -> None:
         help="walk history forwards instead of starting from the most recent maps",
     )
 
+    liquipedia = sub.add_parser(
+        "liquipedia", help="read series formats off a Liquipedia tournament page"
+    )
+    liquipedia.add_argument("page", help="page title, e.g. 'The International/2023'")
+
     sub.add_parser("status", help="show checkpoint and raw row counts")
 
     args = parser.parse_args()
@@ -142,6 +174,8 @@ def main() -> None:
                 await cmd_backfill(args.pages, args.restart)
             elif args.command == "details":
                 await cmd_details(args.limit, args.oldest_first)
+            elif args.command == "liquipedia":
+                await cmd_liquipedia(args.page)
             elif args.command == "normalize":
                 await cmd_normalize(args.limit)
             else:

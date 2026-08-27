@@ -31,10 +31,17 @@ class LiquipediaClient(BaseClient):
     async def query(self, **params: Any) -> dict[str, Any]:
         return await self.get_json("/api.php", action="query", format="json", **params)  # type: ignore[no-any-return]
 
-    async def parse_page(self, page: str) -> dict[str, Any]:
-        """Wiki text of a tournament page. Stage formats are extracted from here."""
+    async def parse_page(self, page: str, prop: str = "wikitext") -> dict[str, Any]:
+        """Wiki source of a tournament page. Stage formats are extracted from here."""
         self.min_interval = self.parse_min_interval
         try:
-            return await self.get_json("/api.php", action="parse", format="json", page=page)  # type: ignore[no-any-return]
+            return await self.get_json(  # type: ignore[no-any-return]
+                "/api.php", action="parse", format="json", page=page, prop=prop
+            )
         finally:
             self.min_interval = 2.0
+
+    async def page_wikitext(self, page: str) -> str:
+        """Just the source text, or empty when the page does not exist."""
+        response = await self.parse_page(page)
+        return str(((response.get("parse") or {}).get("wikitext") or {}).get("*", ""))

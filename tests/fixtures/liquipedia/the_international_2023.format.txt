@@ -1,0 +1,21 @@
+== Format ==
+* '''Participants'''
+**Twelve teams qualified through [[Dota_Pro_Circuit/2023|Dota Pro Circuit]]
+**Eight teams qualified through Regional Qualifiers;
+***One team each from North America, Eastern Europe, China and Southeast Asia
+***Two teams each from Western Europe and South America 
+
+*'''Group Stage''' - ''October 12 - October 15, 2023''
+**'''Phase One'''
+***Four groups of five teams each
+***Single round-robin
+***All series are {{Abbr/Bo2}}
+***{{bgctext|up|Top two teams}} in each group will get matched with opponent from either the {{bgctext|stayup|3rd or 4th place teams}} in the opposite group (A/B and C/D) for seeding matches
+***{{bgctext|down|Bottom team}} in each group is eliminated
+**'''Phase Two (Seeding Decider)'''
+***Remaining sixteen teams play eight {{Abbr/Bo3}} head to head matches to determine main event bracket placement
+
+*'''Main Event''' - ''October 20 - October 22 (Playoffs Weekend) & October 27 - October 29 (Finals Weekend), 2023''
+**Sixteen teams play in a double-elimination bracket
+***Eight teams begin in the Upper Bracket, eight in the Lower Bracket
+**Grand Final is {{Abbr/Bo5}}, all other series are {{Abbr/Bo3}}

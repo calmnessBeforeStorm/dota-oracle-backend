@@ -1,0 +1,24 @@
+== Format ==
+* '''Participants'''
+** Two teams from the Upper Division of [[Dota Pro Circuit/2021/1/Southeast Asia/Upper Division|Season 1]]
+** Four teams from the Lower Division of [[Dota Pro Circuit/2021/1/Southeast Asia/Lower Division|Season 1]]
+** Two teams from open qualifiers
+* '''Standings'''
+** Single round-robin
+** All matches are {{abbr/Bo3}}
+** {{bgctext|up|Top two teams}} are qualified to [[Dota Pro Circuit/2021-22/1/Southeast Asia/Division I|Division I]] for the first tour of the next DPC season
+** {{bgctext|down|Bottom two teams}} are eliminated
+** {{bgctext|stay|Remaining teams}} remain in [[Dota Pro Circuit/2021-22/1/Southeast Asia/Division II|current division]] for the first tour of the next DPC season
+** <span class="mw-customtoggle-Tiebreaker" style="border-bottom:1px dotted;">''Click here for tiebreaker rules''</span>
+<div class="toccolours mw-collapsible mw-collapsed" id="mw-customcollapsible-Tiebreaker" style="width:760px; margin-left:45px">
+*If there is a tie along the dividing line, tiebreaker match will be played
+**{{bgctext|up|Upper Division}}/{{bgctext|stay|remain}}
+**{{bgctext|stay|remain}}/{{bgctext|down|elimination}}
+*** Two-teams tie: {{Abbr/Bo3}}
+*** Three-teams or more tie: {{Abbr/Bo1}}
+*For other ties (in order of importance):
+*# Head-to-head result between the tied teams
+*# Results against lower seeded team
+*# If a tie can be broken along the way, the process is restarted
+*# Coin toss
+</div>
