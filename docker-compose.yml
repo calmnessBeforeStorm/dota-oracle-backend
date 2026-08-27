@@ -51,6 +51,9 @@ services:
       # Migrations are authored inside the container (Python 3.12 + asyncpg live there)
       # but must land on the host, in the repo.
       - ./alembic:/app/alembic
+      # Tests are mounted so the DB-backed ones can be run inside the container, where
+      # Python 3.12 and asyncpg live.
+      - ./tests:/app/tests
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   worker:
