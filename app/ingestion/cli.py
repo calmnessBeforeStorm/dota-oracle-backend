@@ -124,14 +124,23 @@ async def cmd_map_leagues(limit: int | None, apply: bool) -> None:
     print(f"applied:          {report.applied}{'' if apply else '  (dry run, pass --apply)'}")
     print(f"stages written:   {report.stages_written}")
 
+    if report.conflicts:
+        print()
+        print("CONFLICT: one page claimed by several leagues, none applied:")
+        for page, names in report.conflicts.items():
+            print(f"  {page}")
+            for name in names:
+                print(f"    - {name}")
+
     if report.accepted:
         print()
         print(f"{'applied' if apply else 'would apply'} ({len(report.accepted)}):")
         for proposal in sorted(report.accepted, key=lambda p: -p.score):
             venue = {True: "lan", False: "online", None: "?"}[proposal.is_lan]
+            print(f"  {proposal.score:.2f}  {proposal.league_name}")
             print(
-                f"  {proposal.score:.2f}  {proposal.league_name[:34]:<34}"
-                f" -> {proposal.page_title[:38]:<38} {proposal.tier.value} {venue}"
+                f"        -> {proposal.page_title}"
+                f"  [{proposal.tier.value} {venue}] [{proposal.signals}]"
             )
 
     if report.needs_review:
@@ -139,10 +148,8 @@ async def cmd_map_leagues(limit: int | None, apply: bool) -> None:
         print(f"needs a human ({len(report.needs_review)}):")
         for proposal in sorted(report.needs_review, key=lambda p: -p.score):
             mark = " " if proposal.is_tournament else "!"
-            print(
-                f" {mark}{proposal.score:.2f}  {proposal.league_name[:34]:<34}"
-                f" -> {proposal.page_title[:38]:<38} {proposal.tier.value}"
-            )
+            print(f" {mark}{proposal.score:.2f}  {proposal.league_name}")
+            print(f"        -> {proposal.page_title}  [{proposal.tier.value}] [{proposal.signals}]")
         print(" ! = the matched page is not a tournament")
 
 

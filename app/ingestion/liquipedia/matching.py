@@ -14,9 +14,11 @@ applied automatically, and the rest is meant for a human.
 
 import re
 from dataclasses import dataclass
+from datetime import date
 from difflib import SequenceMatcher
 
 from app.db.models.enums import LeagueTier
+from app.ingestion.liquipedia.meta import TournamentMeta
 
 #: Liquipedia separates a tournament from its edition with a slash.
 _SEPARATORS = re.compile(r"[/_]+")
@@ -80,6 +82,48 @@ def name_score(league_name: str, page_title: str) -> float:
 
 
 @dataclass(frozen=True)
+class LeagueEvidence:
+    """What our own data says about a league, for cross-checking a candidate page.
+
+    Derived from the matches we already hold, so it costs nothing and is independent of
+    anything Liquipedia claims - which is what makes it worth checking against.
+    """
+
+    first_match: date | None = None
+    last_match: date | None = None
+    team_count: int | None = None
+
+
+def date_overlap(
+    ours: tuple[date | None, date | None], theirs: tuple[date | None, date | None]
+) -> float | None:
+    """Share of our own match window covered by the tournament's stated dates, 0..1.
+
+    None when either side is unknown. Tournaments cluster in the same weeks, so a high
+    overlap is weak evidence for a match while a zero overlap is strong evidence against.
+    """
+    (our_start, our_end), (their_start, their_end) = ours, theirs
+    if not (our_start and our_end and their_start and their_end):
+        return None
+
+    latest_start = max(our_start, their_start)
+    earliest_end = min(our_end, their_end)
+    overlap = (earliest_end - latest_start).days + 1
+    if overlap <= 0:
+        return 0.0
+
+    span = (our_end - our_start).days + 1
+    return min(1.0, overlap / span)
+
+
+def count_agreement(ours: int | None, theirs: int | None) -> float | None:
+    """1.0 when the team counts match, falling off with the difference."""
+    if ours is None or theirs is None or theirs <= 0:
+        return None
+    return max(0.0, 1.0 - abs(ours - theirs) / theirs)
+
+
+@dataclass(frozen=True)
 class MappingProposal:
     """A candidate mapping, with everything a reviewer needs to accept or reject it."""
 
@@ -92,10 +136,27 @@ class MappingProposal:
     #: False when the page is not a tournament at all - a team or player article that the
     #: search happened to rank highly.
     is_tournament: bool
+    #: Similarity of the names alone, before the other signals adjusted it.
+    name_only_score: float = 0.0
+    #: None when either side could not supply dates or a team count.
+    date_overlap: float | None = None
+    team_agreement: float | None = None
+    is_showmatch: bool = False
 
     @property
     def is_confident(self) -> bool:
         return self.is_tournament and self.score >= AUTO_ACCEPT_SCORE
+
+    @property
+    def signals(self) -> str:
+        """Compact rendering of the corroborating evidence, for the review report."""
+        parts = []
+        parts.append(f"name {self.name_only_score:.2f}")
+        parts.append("dates -" if self.date_overlap is None else f"dates {self.date_overlap:.2f}")
+        parts.append(
+            "teams -" if self.team_agreement is None else f"teams {self.team_agreement:.2f}"
+        )
+        return " ".join(parts)
 
 
 #: Above this a proposal is applied without asking. Chosen to sit above the "different
@@ -121,27 +182,93 @@ def read_categories(categories: list[str]) -> tuple[LeagueTier, bool | None, boo
     return tier, is_lan, is_tournament
 
 
+#: Below this the dates disagree outright and the name similarity cannot be trusted,
+#: however high it is: two editions of the same series read almost identically.
+DATE_VETO_SCORE = 0.45
+
+#: Team counts this far apart mean different tournaments even under the same name.
+TEAM_VETO_AGREEMENT = 0.5
+
+
+def combine_signals(
+    name: float,
+    overlap: float | None,
+    teams: float | None,
+) -> float:
+    """Fold the corroborating signals into the final confidence.
+
+    The name stays the driver: tournaments cluster in the same weeks and field the same
+    number of teams, so dates and counts agreeing says little on its own. Their real value
+    is negative - a candidate whose dates do not overlap ours at all is wrong no matter how
+    the names read, which is exactly the "different edition of the same series" trap.
+    """
+    score = name
+
+    if overlap is not None:
+        if overlap == 0.0:
+            return min(score, DATE_VETO_SCORE)
+        # Small, deliberate: enough to rescue a correct match sitting just below the
+        # threshold, not enough to carry a bad name over it.
+        score = min(1.0, score + 0.08 * overlap)
+
+    if teams is not None:
+        if teams < TEAM_VETO_AGREEMENT:
+            return min(score, 0.6)
+        score = min(1.0, score + 0.04 * teams)
+
+    return score
+
+
 def best_proposal(
     league_id: int,
     league_name: str,
-    candidates: list[tuple[str, list[str]]],
+    candidates: list[tuple[str, list[str], TournamentMeta | None]],
+    evidence: LeagueEvidence | None = None,
 ) -> MappingProposal | None:
     """Pick the best-scoring candidate page for one league.
 
-    `candidates` is (page_title, categories) as returned by the search plus a category
-    lookup. Returns None when nothing scored above zero.
+    `candidates` is (page_title, categories, meta) - the last from `prop=pageprops`, which
+    costs the same batched request as the categories. Returns None when nothing scored.
     """
+    ours = LeagueEvidence() if evidence is None else evidence
     best: MappingProposal | None = None
-    for title, categories in candidates:
+
+    for title, categories, meta in candidates:
         tier, is_lan, is_tournament = read_categories(categories)
+
+        # The page title is a slug; the display name is what OpenDota also stores, so it
+        # usually matches far better. Take whichever reads closer.
+        titles = [title]
+        if meta and meta.display_name:
+            titles.append(meta.display_name)
+        name = max(name_score(league_name, candidate) for candidate in titles)
+
+        overlap = (
+            date_overlap((ours.first_match, ours.last_match), (meta.start_date, meta.end_date))
+            if meta
+            else None
+        )
+        teams = count_agreement(ours.team_count, meta.team_count) if meta else None
+
+        # The description states the tier too, and it is generated from the same source as
+        # the category, so it fills in when the category list is truncated.
+        if tier is LeagueTier.UNKNOWN and meta and meta.tier is not LeagueTier.UNKNOWN:
+            tier = meta.tier
+        if is_lan is None and meta:
+            is_lan = meta.is_lan
+
         proposal = MappingProposal(
             league_id=league_id,
             league_name=league_name,
             page_title=title,
-            score=name_score(league_name, title),
+            score=combine_signals(name, overlap, teams),
             tier=tier,
             is_lan=is_lan,
-            is_tournament=is_tournament,
+            is_tournament=is_tournament or bool(meta and meta.start_date),
+            name_only_score=name,
+            date_overlap=overlap,
+            team_agreement=teams,
+            is_showmatch=bool(meta and meta.is_showmatch),
         )
         # A non-tournament page never wins over a tournament one, however well it scores.
         if best is None or (proposal.is_tournament, proposal.score) > (

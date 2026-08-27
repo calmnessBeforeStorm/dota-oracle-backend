@@ -95,14 +95,17 @@ class TestBestProposal:
         proposal = best_proposal(
             1,
             "DreamLeague Season 29",
-            [("DreamLeague Season 29", NOT_A_TOURNAMENT), ("DreamLeague/29", TIER1)],
+            [
+                ("DreamLeague Season 29", NOT_A_TOURNAMENT, None),
+                ("DreamLeague/29", TIER1, None),
+            ],
         )
         assert proposal is not None
         assert proposal.page_title == "DreamLeague/29"
         assert proposal.is_confident
 
     def test_low_score_is_not_confident(self) -> None:
-        proposal = best_proposal(1, "Destiny League", [("The International/2024", TIER1)])
+        proposal = best_proposal(1, "Destiny League", [("The International/2024", TIER1, None)])
         assert proposal is not None
         assert not proposal.is_confident
 
@@ -113,9 +116,15 @@ class TestBestProposal:
 class FakeLiquipedia:
     """Stands in for the wiki: search hits, categories and page source."""
 
-    def __init__(self, hits: dict[str, list[str]], categories: dict[str, list[str]]) -> None:
+    def __init__(
+        self,
+        hits: dict[str, list[str]],
+        categories: dict[str, list[str]],
+        descriptions: dict[str, str] | None = None,
+    ) -> None:
         self.hits = hits
         self.categories = categories
+        self.descriptions = descriptions or {}
         self.wikitext_calls: list[str] = []
 
     async def query(self, **params: object) -> dict[str, object]:
@@ -129,6 +138,11 @@ class FakeLiquipedia:
                     str(i): {
                         "title": title,
                         "categories": [{"title": c} for c in self.categories.get(title, [])],
+                        "pageprops": (
+                            {"metadescl": self.descriptions[title], "displaytitle": title}
+                            if title in self.descriptions
+                            else {}
+                        ),
                     }
                     for i, title in enumerate(titles)
                 }
@@ -262,3 +276,24 @@ class TestSync:
         assert second.leagues_seen == 0
         stages = (await session.execute(select(TournamentStage))).scalars().all()
         assert len(stages) == 2
+
+
+class TestConflicts:
+    async def test_two_leagues_claiming_one_page_are_both_held_back(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A Liquipedia page describes exactly one tournament, so two leagues matching it
+        means at least one is wrong - and applying either would be a coin flip."""
+        await seed_league(session, 1, "DreamLeague Season 29")
+        await seed_league(session, 2, "DreamLeague Season 29")
+        client = FakeLiquipedia(
+            {"DreamLeague Season 29": ["DreamLeague/29"]}, {"DreamLeague/29": TIER1}
+        )
+
+        report = await sync_liquipedia_leagues(client, sessionmaker, apply=True)
+
+        assert report.applied == 0
+        assert report.conflicts == {"DreamLeague/29": ["DreamLeague Season 29"] * 2}
+        assert len(report.needs_review) == 2
+        leagues = (await session.execute(select(League))).scalars().all()
+        assert all(league.liquipedia_slug is None for league in leagues)
