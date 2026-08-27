@@ -17,6 +17,7 @@ from app.core.logging import configure_logging
 from app.db.session import dispose_engine, get_session_factory
 from app.ingestion.clients.liquipedia import LiquipediaClient
 from app.ingestion.clients.opendota import OpenDotaClient
+from app.ingestion.liquipedia.sync import sync_liquipedia_leagues
 from app.ingestion.liquipedia.wikitext import parse_stage_formats
 from app.ingestion.normalize import (
     normalize_match_details,
@@ -107,6 +108,44 @@ async def cmd_liquipedia(page: str) -> None:
         print(f"       {stage.evidence[:110]}")
 
 
+async def cmd_map_leagues(limit: int | None, apply: bool) -> None:
+    """Propose (and optionally apply) league -> Liquipedia mappings.
+
+    A wrong match mislabels every game of a tournament, so nothing is written unless
+    --apply is given, and only proposals above the confidence threshold are written at all.
+    """
+    async with LiquipediaClient() as client:
+        report = await sync_liquipedia_leagues(
+            client, get_session_factory(), limit=limit, apply=apply
+        )
+
+    print(f"leagues examined: {report.leagues_seen}")
+    print(f"confident:        {report.confident}")
+    print(f"applied:          {report.applied}{'' if apply else '  (dry run, pass --apply)'}")
+    print(f"stages written:   {report.stages_written}")
+
+    if report.accepted:
+        print()
+        print(f"{'applied' if apply else 'would apply'} ({len(report.accepted)}):")
+        for proposal in sorted(report.accepted, key=lambda p: -p.score):
+            venue = {True: "lan", False: "online", None: "?"}[proposal.is_lan]
+            print(
+                f"  {proposal.score:.2f}  {proposal.league_name[:34]:<34}"
+                f" -> {proposal.page_title[:38]:<38} {proposal.tier.value} {venue}"
+            )
+
+    if report.needs_review:
+        print()
+        print(f"needs a human ({len(report.needs_review)}):")
+        for proposal in sorted(report.needs_review, key=lambda p: -p.score):
+            mark = " " if proposal.is_tournament else "!"
+            print(
+                f" {mark}{proposal.score:.2f}  {proposal.league_name[:34]:<34}"
+                f" -> {proposal.page_title[:38]:<38} {proposal.tier.value}"
+            )
+        print(" ! = the matched page is not a tournament")
+
+
 async def cmd_status() -> None:
     async with get_session_factory()() as session:
         cursor = await get_checkpoint(session, Checkpoint.OPENDOTA_PRO_MATCHES)
@@ -163,6 +202,12 @@ def main() -> None:
     )
     liquipedia.add_argument("page", help="page title, e.g. 'The International/2023'")
 
+    mapping = sub.add_parser("map-leagues", help="match leagues to Liquipedia pages and mark tiers")
+    mapping.add_argument("--limit", type=int, default=None, help="stop after N leagues")
+    mapping.add_argument(
+        "--apply", action="store_true", help="persist confident proposals (default: dry run)"
+    )
+
     sub.add_parser("status", help="show checkpoint and raw row counts")
 
     args = parser.parse_args()
@@ -174,6 +219,8 @@ def main() -> None:
                 await cmd_backfill(args.pages, args.restart)
             elif args.command == "details":
                 await cmd_details(args.limit, args.oldest_first)
+            elif args.command == "map-leagues":
+                await cmd_map_leagues(args.limit, args.apply)
             elif args.command == "liquipedia":
                 await cmd_liquipedia(args.page)
             elif args.command == "normalize":

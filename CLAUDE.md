@@ -27,8 +27,13 @@ Tier 1 и отдаёт турнирный календарь. Две разны�
   нумерацию карт в серии и счёт серии со сменой сторон.
 - Детали матчей (`/matches/{id}`) грузятся и разбираются в `match_players`,
   `match_drafts`, `match_objectives`; `matches.patch` заполняется оттуда же.
+- **Фаза 2 начата:** форматы серий читаются со страниц Liquipedia (`{{Abbr/BoN}}` в
+  секции `== Format ==`), лиги сопоставляются с турнирами скорингом по имени, решения
+  версионируются в `league_mappings`.
 - **Ещё нет:** массовой закачки деталей на всю историю — это ~16,5 карт в минуту,
   то есть ~15 часов на год. Решение по глубине за владельцем проекта.
+- **Ещё нет:** ручного разбора неуверенных сопоставлений — из 31 лиги 7 сопоставились
+  автоматически, 24 ждут человека.
 - Тела `sync_liquipedia` (фаза 2), `poll_live_games` (фаза 5) и ML-пайплайна (фазы 3–4)
   помечены `TODO(phase-N)`.
 
@@ -109,6 +114,9 @@ app/
 - `series_type` от Valve **ненадёжен**: Bo2 в нём не представлен (приходит `0`), и отличить
   Bo2 от двух независимых Bo1 по данным Steam/OpenDota невозможно.
 - Источник истины по формату — **Liquipedia**, через `tournament_stages.default_format`.
+  Читается из секции `== Format ==` шаблонами `{{Abbr/BoN}}`; регистр шаблона плавает,
+  исключения пишутся в одном предложении с правилом («Grand Final is Bo5, all other
+  matches are Bo3»), поэтому решение принимается по фразе, а не по строке.
   Поле `format` дублируется на самой серии: тай-брейки и переигровки отклоняются от
   дефолта стадии. Порядок разрешения — в `app/domain/series.resolve_format()`.
 - `series.winner_team_id` **nullable** + отдельный флаг `is_draw`. «Ещё не решено» и
@@ -184,6 +192,11 @@ docker compose exec api python -m app.ingestion.cli backfill --pages 50
 docker compose exec api python -m app.ingestion.cli details --limit 200
 docker compose exec api python -m app.ingestion.cli normalize
 docker compose exec api python -m app.ingestion.cli status
+
+# фаза 2: разметка тиров и форматов
+docker compose exec api python -m app.ingestion.cli map-leagues            # сухой прогон
+docker compose exec api python -m app.ingestion.cli map-leagues --apply    # применить уверенные
+docker compose exec api python -m app.ingestion.cli liquipedia "The International/2024"
 ```
 
 **`alembic downgrade base` на рабочей БД не запускать.** Он дропает все таблицы вместе с

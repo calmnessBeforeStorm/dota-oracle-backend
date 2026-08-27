@@ -9,12 +9,20 @@ from app.db.models.matches import (
     Series,
 )
 from app.db.models.raw import IngestCheckpoint, RawLiquipedia, RawLiveSnapshot, RawMatch
-from app.db.models.reference import League, Player, Team, TeamRoster, TournamentStage
+from app.db.models.reference import (
+    League,
+    LeagueMapping,
+    Player,
+    Team,
+    TeamRoster,
+    TournamentStage,
+)
 from app.db.models.training import MatchSnapshot, PlayerRating, Prediction, TeamFeature
 
 __all__ = [
     "IngestCheckpoint",
     "League",
+    "LeagueMapping",
     "LeagueTier",
     "Match",
     "MatchDraft",

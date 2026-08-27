@@ -8,10 +8,13 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Float,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -45,6 +48,11 @@ class TournamentStage(Base, TimestampMixin):
     """
 
     __tablename__ = "tournament_stages"
+    __table_args__ = (
+        # Stage names are stable within a tournament page, so re-reading it updates in
+        # place instead of piling up duplicates on every sync.
+        UniqueConstraint("league_id", "name", name="uq_tournament_stages_league_name"),
+    )
 
     stage_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     league_id: Mapped[int] = mapped_column(
@@ -92,3 +100,32 @@ class TeamRoster(Base, TimestampMixin):
     valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_standin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class LeagueMapping(Base):
+    """History of tier/Liquipedia decisions for a league (spec section 3, point 4).
+
+    The mapping is versioned on purpose: a tournament can be reclassified, and the reason a
+    match was treated as Tier 1 six months ago has to remain answerable. `leagues` carries
+    the currently active decision denormalized for queries; this table is the record.
+
+    A row with `superseded_at IS NULL` is the active decision.
+    """
+
+    __tablename__ = "league_mappings"
+    __table_args__ = (Index("ix_league_mappings_active", "league_id", "superseded_at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    league_id: Mapped[int] = mapped_column(
+        ForeignKey("leagues.league_id", ondelete="CASCADE"), nullable=False
+    )
+    liquipedia_slug: Mapped[str | None] = mapped_column(String(255))
+    tier: Mapped[str] = mapped_column(String(16), nullable=False)
+    is_lan: Mapped[bool | None] = mapped_column(Boolean)
+    #: Name-similarity score the proposal was made with, 0..1. NULL for a human decision.
+    score: Mapped[float | None] = mapped_column(Float)
+    #: "auto" when accepted above the confidence threshold, "manual" when a human decided.
+    decided_by: Mapped[str] = mapped_column(String(16), nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    note: Mapped[str | None] = mapped_column(String(512))
