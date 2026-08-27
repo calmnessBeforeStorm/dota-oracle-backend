@@ -27,6 +27,17 @@ _NOT_A_TEAM = re.compile(r"^\s*\w+\s*=", re.UNICODE)
 #: "ex-HEROIC" against "Ex-Heroic".
 SAME_TEAM_RATIO = 0.9
 
+#: Names are not stable identifiers, and no amount of string matching fixes that.
+#: Valve bars betting sponsors from The International, so PARIVISION enters as Vision and
+#: BetBoom Team as BoomBoys, while Liquipedia keeps the canonical name. Observed in our own
+#: data: "TEAM VISION", "PVISION", "BoomBoys", "Team Yandex" - and "BoomBoys" under two
+#: different team ids.
+#:
+#: Nothing here tries to resolve that. Roster overlap survives it because it is a ratio over
+#: a dozen names rather than an equality, so a few renames lower the score without breaking
+#: the match - which is also why the veto threshold sits well below one, and why a single
+#: mismatched champion is not allowed to overturn an agreeing roster.
+
 
 def normalize_team(name: str) -> str:
     """Case, spacing and punctuation differ between the two sources for the same team."""

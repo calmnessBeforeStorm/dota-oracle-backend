@@ -9,6 +9,7 @@ Skipping this guarantees train/serve skew: the model looks great in the notebook
 in production, with no way to tell why.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from app.db.models.enums import SeriesFormat
@@ -66,6 +67,10 @@ class GameState:
     radiant_picks: tuple[int, ...] = ()  # hero ids
     dire_picks: tuple[int, ...] = ()
     series: SeriesContext = field(default_factory=SeriesContext)
+    #: What was knowable before the map started (spec section 6.2): skill, form, head to
+    #: head, draft. Empty when the pre-match sweep has not covered this match - which is
+    #: honest, since the alternative is inventing a strength for teams we know nothing about.
+    prematch: Mapping[str, float] = field(default_factory=dict)
     is_lan: bool | None = None
     tier: int = 1  # always 1 at inference time (spec section 5.4)
     prematch_prior: float | None = None  # p(radiant win) from the pre-match model

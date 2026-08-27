@@ -17,7 +17,13 @@ from app.db.models.reference import (
     TeamRoster,
     TournamentStage,
 )
-from app.db.models.training import MatchSnapshot, PlayerRating, Prediction, TeamFeature
+from app.db.models.training import (
+    MatchPrematch,
+    MatchSnapshot,
+    PlayerRating,
+    Prediction,
+    TeamFeature,
+)
 
 __all__ = [
     "IngestCheckpoint",
@@ -28,6 +34,7 @@ __all__ = [
     "MatchDraft",
     "MatchObjective",
     "MatchPlayer",
+    "MatchPrematch",
     "MatchSnapshot",
     "Player",
     "PlayerRating",

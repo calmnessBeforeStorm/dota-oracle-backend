@@ -252,9 +252,16 @@ def combine_signals(
         score = min(1.0, score + 0.15 * roster)
 
     if winner_agrees is not None:
-        # One name against a dozen, so it confirms modestly. Disagreement is louder: two
-        # tournaments with the same field but different champions are different events.
-        score = min(1.0, score + 0.05) if winner_agrees else min(score, 0.5)
+        if winner_agrees:
+            score = min(1.0, score + 0.05)
+        elif roster is None or roster < ROSTER_DECISIVE:
+            # Disagreement is only allowed to veto when the roster has not already settled
+            # it. Teams rename constantly - Valve bars betting sponsors from The
+            # International, so PARIVISION plays as Vision and BetBoom as BoomBoys - and
+            # the champion is a single name where the roster is a dozen. Overturning a
+            # dozen agreeing names on one renamed one is how a correct mapping gets thrown
+            # away.
+            score = min(score, 0.5)
 
     return score
 

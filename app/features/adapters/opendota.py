@@ -9,6 +9,7 @@ full of end-of-match summaries that would be trivial to reach for and would leak
 straight into the training data (spec section 12).
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 from app.features.buildings import BuildingState, state_at
@@ -111,6 +112,7 @@ def snapshot_at(
     minute: int,
     series: SeriesContext | None = None,
     prematch_prior: float | None = None,
+    prematch: Mapping[str, float] | None = None,
 ) -> GameState:
     """One training snapshot. Only information available at `minute` may be read."""
     objectives = match.get("objectives") or []
@@ -131,6 +133,7 @@ def snapshot_at(
         radiant_picks=_picks(match, radiant=True),
         dire_picks=_picks(match, radiant=False),
         series=series or SeriesContext(),
+        prematch=prematch or {},
         prematch_prior=prematch_prior,
     )
 
@@ -139,6 +142,8 @@ def iter_snapshots(
     match: dict[str, Any],
     series: SeriesContext | None = None,
     min_minute: int = 0,
+    prematch: Mapping[str, float] | None = None,
+    prematch_prior: float | None = None,
 ) -> list[GameState]:
     """Unroll a parsed match into one snapshot per minute.
 
@@ -148,4 +153,7 @@ def iter_snapshots(
     if not is_parsed(match):
         raise ValueError(f"match {match.get('match_id')} is not parsed, no per-minute series")
     last_minute = int(match.get("duration", 0)) // 60
-    return [snapshot_at(match, m, series) for m in range(min_minute, last_minute + 1)]
+    return [
+        snapshot_at(match, m, series, prematch_prior, prematch)
+        for m in range(min_minute, last_minute + 1)
+    ]

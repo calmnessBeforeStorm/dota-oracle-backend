@@ -25,7 +25,7 @@ from app.core.logging import get_logger
 from app.db.models.enums import SeriesFormat
 from app.db.models.matches import Match, Series
 from app.db.models.raw import RawMatch
-from app.db.models.training import MatchSnapshot
+from app.db.models.training import MatchPrematch, MatchSnapshot
 from app.features.adapters.opendota import is_parsed, iter_snapshots
 from app.features.game_state import SeriesContext
 from app.features.live import build_live_features
@@ -82,6 +82,25 @@ class MatchContext:
             radiant_series_wins=self.radiant_series_wins,
             dire_series_wins=self.dire_series_wins,
         )
+
+
+async def _prematch_for(
+    session: AsyncSession, match_ids: list[int]
+) -> dict[int, tuple[dict[str, float], float]]:
+    """Pre-match features and prior per map, from the chronological sweep.
+
+    Absent for any map whose rosters we have not fetched. Missing is left missing: the
+    feature builder defaults these differences to zero, which is the neutral value, whereas
+    inventing a skill gap would not be.
+    """
+    rows = (
+        await session.execute(
+            select(
+                MatchPrematch.match_id, MatchPrematch.features, MatchPrematch.prematch_prior
+            ).where(MatchPrematch.match_id.in_(match_ids))
+        )
+    ).all()
+    return {int(match_id): (dict(features), float(prior)) for match_id, features, prior in rows}
 
 
 async def _contexts_for(session: AsyncSession, match_ids: list[int]) -> dict[int, MatchContext]:
@@ -182,15 +201,23 @@ async def _featurize_batch(
         return
 
     async with session_factory() as session:
-        contexts = await _contexts_for(session, [int(p["match_id"]) for p in usable])
+        match_ids = [int(p["match_id"]) for p in usable]
+        contexts = await _contexts_for(session, match_ids)
+        prematch = await _prematch_for(session, match_ids)
 
         rows: list[dict[str, Any]] = []
         for payload in usable:
             match_id = int(payload["match_id"])
             context = contexts.get(match_id, MatchContext())
             label = bool(payload["radiant_win"])
+            prematch_features, prior = prematch.get(match_id, ({}, 0.5))
 
-            for state in iter_snapshots(payload, series=context.to_series_context()):
+            for state in iter_snapshots(
+                payload,
+                series=context.to_series_context(),
+                prematch=prematch_features,
+                prematch_prior=prior,
+            ):
                 rows.append(
                     {
                         "match_id": match_id,

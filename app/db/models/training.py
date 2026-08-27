@@ -71,3 +71,25 @@ class Prediction(Base):
     model_version: Mapped[str] = mapped_column(String(64), nullable=False)
     p_radiant: Mapped[float] = mapped_column(Float, nullable=False)
     features: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
+class MatchPrematch(Base):
+    """Everything knowable about a map before it started (spec section 6.2).
+
+    One row per map rather than per team: head-to-head and the draft are properties of the
+    pairing, not of either side, and the model consumes one vector per map anyway.
+
+    Every value is computed in a single chronological sweep from matches that had already
+    finished, which is the only thing that makes the table safe to train on.
+    """
+
+    __tablename__ = "match_prematch"
+
+    match_id: Mapped[int] = mapped_column(
+        ForeignKey("matches.match_id", ondelete="CASCADE"), primary_key=True
+    )
+    features: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    #: Pre-match win probability for radiant. Fed to the live model as a prior, and on its
+    #: own it is baseline number four from spec section 7.3.
+    prematch_prior: Mapped[float] = mapped_column(Float, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

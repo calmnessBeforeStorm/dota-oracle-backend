@@ -188,3 +188,44 @@ def test_signals_report_the_roster_when_it_was_looked_up() -> None:
         is_tournament=True,
     )
     assert "roster" not in not_escalated.signals
+
+
+class TestRenamedTeams:
+    """Teams rename constantly, and betting sponsors make it systematic.
+
+    Valve bars them from The International, so PARIVISION enters as Vision and BetBoom Team
+    as BoomBoys, while Liquipedia keeps the canonical name. Observed in our own data as
+    "TEAM VISION", "PVISION", "BoomBoys" and "Team Yandex" - the last two even under two
+    different team ids.
+    """
+
+    def test_renames_lower_the_overlap_without_breaking_it(self) -> None:
+        ours = {
+            normalize_team(n)
+            for n in ["BoomBoys", "TEAM VISION", "Team Spirit", "Team Falcons", "Team Liquid"]
+        }
+        theirs = {
+            normalize_team(n)
+            for n in ["BetBoom Team", "PARIVISION", "Team Spirit", "Team Falcons", "Team Liquid"]
+        }
+
+        overlap = roster_overlap(ours, theirs)
+        assert overlap is not None
+        # Three of five still match, which is far above the veto and correctly identifies
+        # the tournament despite two organisations wearing different names.
+        assert overlap == pytest.approx(0.6)
+        assert combine_signals(name=0.5, overlap=None, teams=None, roster=overlap) > 0.5
+
+    def test_a_renamed_champion_cannot_overturn_an_agreeing_roster(self) -> None:
+        """The bug this guards: the champion is one name where the roster is a dozen, so a
+        single rename must not throw away a mapping the roster already confirmed."""
+        with_roster = combine_signals(
+            name=0.6, overlap=1.0, teams=1.0, roster=0.9, winner_agrees=False
+        )
+        assert with_roster > 0.5
+
+    def test_a_mismatched_champion_still_vetoes_without_roster_support(self) -> None:
+        without_roster = combine_signals(
+            name=0.9, overlap=1.0, teams=1.0, roster=None, winner_agrees=False
+        )
+        assert without_roster <= 0.5

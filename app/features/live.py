@@ -39,8 +39,28 @@ FEATURE_ORDER: tuple[str, ...] = (
     "is_conditional_game",
     "series_len",
     "series_wins_diff",
-    # priors
+    # priors and pre-match context (spec section 6.2)
     "prematch_prior",
+    "skill_diff",
+    "skill_sigma_sum",
+    "established_diff",
+    "form_diff",
+    "h2h_advantage",
+    "draft_advantage",
+    "rest_days_diff",
+    "maps_last_24h_diff",
+)
+
+#: The subset supplied by the pre-match sweep rather than by the game state.
+PREMATCH_FEATURE_NAMES: tuple[str, ...] = (
+    "skill_diff",
+    "skill_sigma_sum",
+    "established_diff",
+    "form_diff",
+    "h2h_advantage",
+    "draft_advantage",
+    "rest_days_diff",
+    "maps_last_24h_diff",
 )
 
 
@@ -93,6 +113,12 @@ def build_live_features(state: GameState) -> dict[str, float]:
         "series_wins_diff": float(state.series.radiant_series_wins - state.series.dire_series_wins),
         "prematch_prior": 0.5 if state.prematch_prior is None else state.prematch_prior,
     }
+
+    # Zero is the neutral value for every one of these: they are differences between the
+    # two sides, so "we know nothing" and "the sides are equal" coincide. That is not true
+    # of the state features above, which is why only these default.
+    for name in PREMATCH_FEATURE_NAMES:
+        features[name] = float(state.prematch.get(name, 0.0))
     missing = set(FEATURE_ORDER) - features.keys()
     if missing:
         raise RuntimeError(f"feature builder is out of sync with FEATURE_ORDER: {sorted(missing)}")
