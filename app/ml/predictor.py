@@ -23,6 +23,46 @@ class Predictor(Protocol):
     def predict_proba_radiant(self, features: dict[str, float]) -> float: ...
 
 
+#: Nothing is ever served outside this range.
+#:
+#: Measured on our own prediction log, 2026-08-28: of the 86 finished matches where the
+#: baseline claimed at least 99.9% for a side, that side lost 8 times. A claim of 99.9% that
+#: is wrong once in eleven matches is not a probability, it is a rounding error with a
+#: decimal point.
+#:
+#: The cost is not only in credibility. The baseline clamps its logit at +-20, so a confident
+#: miss costs 20 nats where an ordinary row costs 0.5 - one comeback then decides the log
+#: loss of an entire minute bucket, which is exactly what happened to the 30+ bucket on the
+#: accuracy dashboard.
+#:
+#: This is a guard, not calibration. It does not make the probabilities honest - only a
+#: fitted model and a calibration step do that (phase 4). It stops us from making a claim no
+#: amount of gold advantage can support: in Dota the losing side keeps its buyback, its
+#: ancient and every comeback that has ever happened.
+SERVING_BOUNDS = (0.01, 0.99)
+
+
+def bounded(p: float) -> float:
+    low, high = SERVING_BOUNDS
+    return min(max(p, low), high)
+
+
+class _Bounded:
+    """Applies `bounded` to whatever predictor is active.
+
+    Wrapped here rather than inside each predictor so the rule survives the model being
+    replaced: phase 4 swaps the booster in, and a rule written into the placeholder would
+    have left with it.
+    """
+
+    def __init__(self, inner: Predictor) -> None:
+        self._inner = inner
+        self.version = inner.version
+
+    def predict_proba_radiant(self, features: dict[str, float]) -> float:
+        return bounded(self._inner.predict_proba_radiant(features))
+
+
 class BaselinePredictor:
     """Logistic regression on gold advantage and minute. Hand-fitted placeholder values.
 
@@ -68,7 +108,7 @@ def get_predictor() -> Predictor:
         model_path = Path(settings.model_dir) / f"{version}.txt"
         if model_path.exists():
             try:
-                _predictor = LightGBMPredictor(model_path, version)
+                _predictor = _Bounded(LightGBMPredictor(model_path, version))
                 log.info("model.loaded", version=version)
                 return _predictor
             except Exception as exc:
@@ -77,7 +117,7 @@ def get_predictor() -> Predictor:
             log.warning("model.missing", path=str(model_path))
 
     log.warning("model.baseline_fallback")
-    _predictor = BaselinePredictor()
+    _predictor = _Bounded(BaselinePredictor())
     return _predictor
 
 
