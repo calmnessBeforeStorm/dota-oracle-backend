@@ -5,6 +5,11 @@ on its own - a model that promotes itself eventually promotes a regression unnot
 
     docker compose --profile ml run --rm trainer python -m app.ml.cli train
     docker compose --profile ml run --rm trainer python -m app.ml.cli models
+
+`drift` is the exception - it reads the prediction log and needs no ml extra, so it runs in
+the API image too:
+
+    docker compose exec api python -m app.ml.cli drift
 """
 
 import argparse
@@ -16,6 +21,7 @@ from app.db.session import dispose_engine
 from app.ml.evaluate import format_report
 from app.ml.pipeline import DEFAULT_ROUNDS, train
 from app.ml.registry import list_models
+from app.workers.drift import check_calibration_drift
 
 
 async def cmd_train(rounds: int, notes: str) -> None:
@@ -59,6 +65,17 @@ async def cmd_models() -> None:
         )
 
 
+async def cmd_drift() -> None:
+    """Run the calibration check by hand.
+
+    The same code the daily cron runs, so what is printed here is exactly what would have
+    been logged - an alarm nobody can reproduce on demand is an alarm nobody trusts.
+    """
+    alerting = await check_calibration_drift({})
+    print(f"versions drifting: {alerting}")
+    print("Per-version verdicts are in the log lines above.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="app.ml.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -76,6 +93,10 @@ def main() -> None:
 
     sub.add_parser("models", help="list trained models and whether they passed the gate")
 
+    sub.add_parser(
+        "drift", help="check served predictions for a rise in calibration error (phase 7)"
+    )
+
     args = parser.parse_args()
     configure_logging(get_settings().log_level)
 
@@ -83,6 +104,8 @@ def main() -> None:
         try:
             if args.command == "train":
                 await cmd_train(args.rounds, args.notes)
+            elif args.command == "drift":
+                await cmd_drift()
             else:
                 await cmd_models()
         finally:

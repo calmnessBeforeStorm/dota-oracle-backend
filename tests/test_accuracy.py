@@ -48,7 +48,14 @@ async def add_prediction(
 
 def scored(*rows: tuple[int, int, float, bool]) -> list[ScoredPrediction]:
     return [
-        ScoredPrediction(match_id=m, minute=minute, p_radiant=p, radiant_win=win)
+        ScoredPrediction(
+            match_id=m,
+            minute=minute,
+            p_radiant=p,
+            radiant_win=win,
+            # Irrelevant to these metrics; the drift check is what reads it.
+            predicted_at=BASE + timedelta(minutes=minute),
+        )
         for m, minute, p, win in rows
     ]
 

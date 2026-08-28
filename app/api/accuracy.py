@@ -20,6 +20,7 @@ on the least information, and it is the one the viewer actually saw first.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import Select, func, select
@@ -51,6 +52,10 @@ class ScoredPrediction:
     minute: int
     p_radiant: float
     radiant_win: bool
+    #: When it was served, not when the match ended. Drift is measured against the moment we
+    #: made the claim - a model that went bad in July did so in July, whatever date the
+    #: outcome arrived on.
+    predicted_at: datetime
 
 
 def _scored_rows(version: str | None = None) -> Select[Any]:
@@ -65,6 +70,7 @@ def _scored_rows(version: str | None = None) -> Select[Any]:
             Prediction.minute,
             Prediction.p_radiant,
             Prediction.model_version,
+            Prediction.predicted_at,
             Match.radiant_win,
         )
         .join(Match, Match.match_id == Prediction.match_id)
@@ -90,6 +96,7 @@ async def load_scored(session: AsyncSession, version: str) -> list[ScoredPredict
             minute=int(row.minute),
             p_radiant=float(row.p_radiant),
             radiant_win=bool(row.radiant_win),
+            predicted_at=row.predicted_at,
         )
         for row in rows
     ]
