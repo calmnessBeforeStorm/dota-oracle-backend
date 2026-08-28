@@ -1,0 +1,79 @@
+== Format ==
+<!-- HTML is used instead of MediaWiki lists due to a bug where mw-collapsible sticks the content in a separate div right below, which splits the list.  Use MediaWiki lists for anything that is not as complicated as this. -->
+<ul>
+   <li>
+      '''Group Stage''' ''(August 13 - 16)''
+      <ul>
+         <li>
+            Swiss-system of sixteen teams
+            <ul>
+               <li>All matches are {{Abbr/Bo3}}</li>
+               <li>{{Bgcolortext|up|Top three teams}} advance to playoffs</li>
+               <li>{{Bgcolortext|stay|4th to 13th place teams}} proceed to an elimination round</li>
+               <li>{{Bgcolortext|down|Remaining teams}} are eliminated</li>
+               <li>
+                  {{Collapsible rules|1|width=800px|title=Swiss Pairing Rules|mleft=-2px|texts=
+                  <ul>
+                     <li>
+                        Teams are ranked from best to worst based on the following criteria, evaluated in order:
+                        <ol>
+                           <li>Number of Matches Won</li>
+                           <li>Number of Matches Lost</li>
+                           <li>Total Number of Matches Won by Opponents Played</li>
+                           <li>Percentage of Games Won</li>
+                           <li>Average Percentage of Games Won by Opponents Played</li>
+                           <li>Average Game Duration (Shorter is Better)</li>
+                           <li>Coin Toss</li>
+                        </ol>
+                     </li>
+					 <li>
+                        Teams are paired using the General Swiss Pairing Rules. Rounds that have modifications to these rules are notated below
+                        <ul>
+							<li>Teams with the same record are paired against each other</li>
+							<li>Avoid repeat pairings when possible</li>
+							<li>Minimize the distance in ranking between the teams when possible</li>
+                        </ul>
+                     </li>
+                     <li>
+                        Modifications to the General Swiss Pairing Rules by Round:
+                        <dl>
+                           <dt>Round 1</dt>
+                           <dd>Teams are split into two different Groups</dd>
+                           <dd>Matchups are set by the tournament organizer, with teams playing other members of their group</dd>
+                           <dt>Round 2</dt>
+                           <dd>Teams are only matched against other members of their initial group</dd>
+                           <dt>Round 3</dt>
+                           <dd>Teams are only matched against other members of their initial group</dd>
+                           <dt>Round 4</dt>
+                           <dd>Teams are only matched against members of the other group</dd>
+                           <dt>Round 5</dt>
+                           <dd>For matches where the loser is eliminated, maximize the distance in ranking between the teams</dd>
+                           <dt>Elimination Round</dt>
+                           <dd>Starting with the best 3-2 team, they will choose any of the five 2-3 teams as their opponent.</dd>
+                           <dd>The next best 3-2 team will then choose any of the remaining 2-3 teams as their opponent.</dd>
+                           <dd>Repeat the above until all teams have chosen an opponent.</dd>
+                        </dl>
+                     </li>
+                  </ul>
+                  }}
+               </li>
+            </ul>
+         </li>
+         <li>
+            Elimination Round
+            <ul>
+               <li>Five teams advance to playoffs</li>
+               <li>Remaining teams are eliminated</li>
+            </ul>
+         </li>
+      </ul>
+   </li>
+   <li>
+      '''Main Event''' ''(August 20 - 23)''
+      <ul>
+         <li>Double-elimination bracket</li>
+         <li>Grand Final is {{Abbr/Bo5}}, all other matches are {{Abbr/Bo3}}</li>
+      </ul>
+   </li>
+</ul>
+

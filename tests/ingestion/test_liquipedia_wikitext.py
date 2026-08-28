@@ -122,3 +122,74 @@ class TestUnknownShapes:
 
     def test_empty_wikitext_is_not_an_error(self) -> None:
         assert parse_stage_formats("") == []
+
+
+class TestTheInternational2026:
+    """The Format section written in HTML instead of wiki lists.
+
+    Liquipedia explains the choice on the page: "HTML is used instead of MediaWiki lists due
+    to a bug where mw-collapsible sticks the content in a separate div right below, which
+    splits the list. Use MediaWiki lists for anything that is not as complicated as this."
+
+    So the pages that most need parsing are the ones written in the shape the parser could
+    not read - and it stayed invisible, because a page with no readable stages looks exactly
+    like a page with no stages. The International 2026 is a mapped Tier 1 league whose 58
+    series all sat without a format while its Format section plainly held {{Abbr/Bo3}} and
+    {{Abbr/Bo5}}.
+    """
+
+    def stages(self) -> list:
+        return parse_stage_formats(fixture("the_international_2026"), fallback_year=2026)
+
+    def test_the_stages_are_found_at_all(self) -> None:
+        assert self.stages()
+
+    def test_the_group_stage_is_bo3(self) -> None:
+        assert stage_named(self.stages(), "group").default_format is SeriesFormat.BO3
+
+    def test_the_group_stage_is_classified_as_one(self) -> None:
+        assert stage_named(self.stages(), "group").stage_type is StageType.GROUP
+
+    def test_the_main_event_defaults_to_bo3_and_flags_the_bo5_final(self) -> None:
+        """ "Grand Final is Bo5, all other matches are Bo3" - the default is the rule, not the
+        exception, and the disagreement is surfaced rather than silently resolved."""
+        playoff = stage_named(self.stages(), "main event")
+
+        assert playoff.default_format is SeriesFormat.BO3
+        assert SeriesFormat.BO5 in playoff.formats_seen
+
+    def test_the_collapsible_rules_do_not_become_stages(self) -> None:
+        """The swiss pairing criteria are a nested ordered list inside the group stage. They
+        carry no format marker, so they must not turn into stages of their own."""
+        names = [s.name.lower() for s in self.stages()]
+
+        assert not any("matches won" in name or "criteria" in name for name in names)
+
+
+class TestHtmlLists:
+    def test_a_wiki_list_is_left_alone(self) -> None:
+        """Pages that were already readable must take exactly the path they always did."""
+        body = "== Format ==\n*'''A''' {{Abbr/Bo3}}\n**All matches are {{Abbr/Bo3}}"
+
+        assert (
+            extract_format_section(body)
+            == "\n*'''A''' {{Abbr/Bo3}}\n**All matches are {{Abbr/Bo3}}"
+        )
+
+    def test_nesting_becomes_bullet_depth(self) -> None:
+        body = (
+            "== Format ==\n<ul><li>'''Group Stage'''\n"
+            "<ul><li>All matches are {{Abbr/Bo3}}</li></ul></li></ul>"
+        )
+
+        assert extract_format_section(body) == "*'''Group Stage'''\n**All matches are {{Abbr/Bo3}}"
+
+    def test_html_comments_are_dropped(self) -> None:
+        body = "== Format ==\n<!-- why HTML -->\n<ul><li>'''A''' {{Abbr/Bo5}}</li></ul>"
+
+        assert extract_format_section(body) == "*'''A''' {{Abbr/Bo5}}"
+
+    def test_an_empty_item_produces_no_bullet(self) -> None:
+        body = "== Format ==\n<ul><li></li><li>'''A''' {{Abbr/Bo1}}</li></ul>"
+
+        assert extract_format_section(body) == "*'''A''' {{Abbr/Bo1}}"

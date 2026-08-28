@@ -118,9 +118,73 @@ def parse_stage_dates(
     return start, end
 
 
+#: Liquipedia writes complicated Format sections in HTML rather than wiki lists, and says so
+#: on the page itself: "HTML is used instead of MediaWiki lists due to a bug where
+#: mw-collapsible sticks the content in a separate div right below, which splits the list."
+#:
+#: Which means the pages that most need parsing are written in the form the parser could not
+#: read. The International 2026 is the case that surfaced it: a mapped Tier 1 league whose 58
+#: series all sat without a format, while its Format section plainly held {{Abbr/Bo3}} and
+#: {{Abbr/Bo5}}.
+_LIST_OPEN = re.compile(r"<\s*(?:ul|ol)\b[^>]*>", re.IGNORECASE)
+_LIST_CLOSE = re.compile(r"<\s*/\s*(?:ul|ol)\s*>", re.IGNORECASE)
+_ITEM_OPEN = re.compile(r"<\s*li\b[^>]*>", re.IGNORECASE)
+_ITEM_CLOSE = re.compile(r"<\s*/\s*li\s*>", re.IGNORECASE)
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+_ANY_TAG = re.compile(r"<[^>]+>")
+
+
+def html_lists_to_bullets(body: str) -> str:
+    """Rewrite `<ul><li>` nesting into the `*`/`**` bullets the stage walker reads.
+
+    Only the list scaffolding is translated. Everything inside an item is left exactly as
+    written, because the format markers, the bold stage titles and the date parentheses all
+    still have to be read from it verbatim.
+
+    A body with no HTML list comes back untouched, so wiki-list pages take the path they
+    always did.
+    """
+    if not _ITEM_OPEN.search(body):
+        return body
+
+    lines: list[str] = []
+    depth = 0
+    current: list[str] | None = None
+
+    def flush() -> None:
+        nonlocal current
+        if current is not None:
+            text = " ".join(" ".join(current).split())
+            if text:
+                lines.append("*" * max(depth, 1) + text)
+            current = None
+
+    for token in re.split(r"(<[^>]+>)", _HTML_COMMENT.sub("", body)):
+        if _LIST_OPEN.fullmatch(token):
+            flush()
+            depth += 1
+        elif _LIST_CLOSE.fullmatch(token):
+            flush()
+            depth = max(0, depth - 1)
+        elif _ITEM_OPEN.fullmatch(token):
+            # An item holding a nested list closes here and its children land one level
+            # deeper, which is exactly the shape the walker expects.
+            flush()
+            current = []
+        elif _ITEM_CLOSE.fullmatch(token):
+            flush()
+        elif _ANY_TAG.fullmatch(token):
+            continue  # any other markup: <br>, <b>, and the like
+        elif current is not None:
+            current.append(token)
+
+    flush()
+    return "\n".join(lines)
+
+
 def extract_format_section(wikitext: str) -> str | None:
     match = FORMAT_SECTION.search(wikitext)
-    return match.group("body") if match else None
+    return html_lists_to_bullets(match.group("body")) if match else None
 
 
 def classify_stage(name: str) -> StageType | None:
