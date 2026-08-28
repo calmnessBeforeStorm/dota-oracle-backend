@@ -574,3 +574,73 @@ class TestChildRowsAreReplaced:
                 await check.execute(select(func.count()).select_from(MatchObjective))
             ).scalar_one()
         assert (players, objectives) == (2, 3)
+
+
+class TestADetailPayloadCanCreateTheMatch:
+    """A map is knowable from its detail payload alone (spec section 4.2).
+
+    The usual order is summary first, detail second, and then this does nothing the summary
+    had not already done. It matters when the summary is late or never arrives: measured
+    2026-08-28, 220 matches the live loop had predicted sat above the top of OpenDota's
+    /proMatches, which had not advanced in ten hours. Without this the map is invisible to
+    us - outcome, rosters and all - for as long as that lasts, and the child rows cannot even
+    be stored, because they carry a foreign key to a row that does not exist.
+    """
+
+    async def test_a_payload_without_a_summary_creates_the_match(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await upsert_raw_matches(session, RawSource.STRATZ_MATCH, [STRATZ_PAYLOAD])
+        await session.commit()
+
+        await normalize_match_details(sessionmaker)
+
+        async with sessionmaker() as check:
+            row = (await check.execute(select(Match).where(Match.match_id == 42))).scalar_one()
+        assert row.radiant_win is True
+        assert row.duration == 1800
+
+    async def test_the_children_land_too(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await upsert_raw_matches(session, RawSource.STRATZ_MATCH, [STRATZ_PAYLOAD])
+        await session.commit()
+
+        report = await normalize_match_details(sessionmaker)
+
+        assert (report.match_players, report.match_drafts) == (2, 3)
+
+    async def test_it_never_overwrites_what_the_summary_said(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Fill gaps, never overwrite: the summary layer owns these columns. The two sources
+        disagreeing is exactly when a silent overwrite would do the most damage."""
+        await upsert_raw_matches(
+            session, RawSource.OPENDOTA_PRO_MATCHES, [summary(42, radiant_win=False)]
+        )
+        await session.commit()
+        await normalize_pro_matches(sessionmaker)
+
+        await upsert_raw_matches(session, RawSource.STRATZ_MATCH, [STRATZ_PAYLOAD])
+        await session.commit()
+        await normalize_match_details(sessionmaker)
+
+        async with sessionmaker() as check:
+            row = (await check.execute(select(Match).where(Match.match_id == 42))).scalar_one()
+        assert row.radiant_win is False
+
+    async def test_it_claims_neither_the_league_nor_the_series(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """`seriesId` is in the payload and stays unread (invariant 11), and `leagueId` is a
+        foreign key into a table the summary layer populates - writing an id for a league we
+        hold no row for would fail the insert outright."""
+        await upsert_raw_matches(session, RawSource.STRATZ_MATCH, [STRATZ_PAYLOAD])
+        await session.commit()
+
+        await normalize_match_details(sessionmaker)
+
+        async with sessionmaker() as check:
+            row = (await check.execute(select(Match).where(Match.match_id == 42))).scalar_one()
+        assert row.series_id is None
+        assert row.league_id is None

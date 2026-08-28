@@ -515,16 +515,58 @@ def parse_stratz_match_detail(payload: dict[str, Any]) -> dict[str, list[dict[st
     return {"players": players, "drafts": drafts, "objectives": objectives}
 
 
-#: How to read a detail payload, by the source it came from. The tuple is
-#: (parser, id field, patch field, "was it parsed" field) - the two providers disagree on
-#: all four. `None` for the patch field means the source cannot supply one: STRATZ numbers
-#: game versions differently, and a number from the wrong scale is worse than a NULL
-#: (invariant 12).
-_DETAIL_PARSERS: dict[
-    str, tuple[Callable[[dict[str, Any]], dict[str, list[dict[str, Any]]]], str, str | None, str]
-] = {
-    str(RawSource.STRATZ_MATCH): (parse_stratz_match_detail, "id", None, "parsedDateTime"),
-    str(RawSource.OPENDOTA_MATCH): (parse_match_detail, "match_id", "patch", "version"),
+def _stratz_skeleton(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "match_id": int(payload["id"]),
+        "radiant_win": payload.get("didRadiantWin"),
+        "start_time": _to_utc(payload.get("startDateTime")),
+        "duration": payload.get("durationSeconds"),
+        "radiant_team_id": payload.get("radiantTeamId"),
+        "dire_team_id": payload.get("direTeamId"),
+    }
+
+
+def _opendota_skeleton(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "match_id": int(payload["match_id"]),
+        "radiant_win": payload.get("radiant_win"),
+        "start_time": _to_utc(payload.get("start_time")),
+        "duration": payload.get("duration"),
+        "radiant_team_id": payload.get("radiant_team_id"),
+        "dire_team_id": payload.get("dire_team_id"),
+    }
+
+
+@dataclass(frozen=True)
+class DetailParser:
+    """How to read a detail payload, by the source it came from.
+
+    The two providers disagree on every field name here, including what a match id is
+    called. `patch_field` is None when the source cannot supply one: STRATZ numbers game
+    versions on a different scale, and a number from the wrong scale is worse than a NULL
+    (invariant 12).
+
+    `skeleton` is what makes a match knowable from its detail payload alone. The normal
+    order is summary first, detail second, and then it does nothing the summary had not
+    already done. It matters in the case the summary feed is late or never comes: a match
+    the live poller predicted and OpenDota has not published is otherwise invisible to us,
+    outcome and all.
+    """
+
+    parse: Callable[[dict[str, Any]], dict[str, list[dict[str, Any]]]]
+    id_field: str
+    patch_field: str | None
+    parsed_field: str
+    skeleton: Callable[[dict[str, Any]], dict[str, Any]]
+
+
+_DETAIL_PARSERS: dict[str, DetailParser] = {
+    str(RawSource.STRATZ_MATCH): DetailParser(
+        parse_stratz_match_detail, "id", None, "parsedDateTime", _stratz_skeleton
+    ),
+    str(RawSource.OPENDOTA_MATCH): DetailParser(
+        parse_match_detail, "match_id", "patch", "version", _opendota_skeleton
+    ),
 }
 
 #: Which payload wins when a map has been fetched from both. STRATZ first: it is the source
@@ -569,18 +611,21 @@ async def normalize_match_details(
         objectives: list[dict[str, Any]] = []
         enrichment: list[dict[str, Any]] = []
 
+        skeletons: list[dict[str, Any]] = []
+
         for source, payload in rows:
-            parse, id_field, patch_field, parsed_field = _DETAIL_PARSERS[source]
-            if payload.get(id_field) is None:
+            parser = _DETAIL_PARSERS[source]
+            if payload.get(parser.id_field) is None:
                 report.skip("no match_id")
                 continue
-            parsed = parse(payload)
+            parsed = parser.parse(payload)
             players.extend(parsed["players"])
             drafts.extend(parsed["drafts"])
             objectives.extend(parsed["objectives"])
+            skeletons.append(parser.skeleton(payload))
             enrichment.append(
                 {
-                    "match_id": int(payload[id_field]),
+                    "match_id": int(payload[parser.id_field]),
                     # Only what the summary could not tell us. Series fields are present in
                     # the STRATZ payload and absent from the OpenDota one, and are
                     # deliberately not touched either way (invariant 11).
@@ -588,14 +633,17 @@ async def normalize_match_details(
                     # `patch` is left NULL for STRATZ on purpose: its `gameVersionId` is a
                     # different numbering than OpenDota's `patch`, and writing one into a
                     # column that means the other is worse than not knowing (invariant 12).
-                    "patch": payload.get(patch_field) if patch_field else None,
-                    "is_parsed": payload.get(parsed_field) is not None,
+                    "patch": payload.get(parser.patch_field) if parser.patch_field else None,
+                    "is_parsed": payload.get(parser.parsed_field) is not None,
                     "updated_at": utcnow(),
                 }
             )
 
         touched = [int(row["match_id"]) for row in enrichment]
         async with session_factory() as session:
+            # Before the children: they carry a foreign key to `matches`, so a map whose
+            # summary never arrived would otherwise fail the insert rather than be stored.
+            await _ensure_matches(session, skeletons)
             report.match_players += await _replace_children(session, MatchPlayer, players, touched)
             report.match_drafts += await _replace_children(session, MatchDraft, drafts, touched)
             report.match_objectives += await _replace_children(
@@ -648,6 +696,35 @@ async def _replace_children(
         await session.execute(insert(model).values(rows[start : start + chunk_size]))
 
     return len(rows)
+
+
+async def _ensure_matches(session: AsyncSession, rows: list[dict[str, Any]]) -> None:
+    """Make sure every map with a detail payload has a row, filling only what is missing.
+
+    `coalesce(existing, new)` on every column, which is the whole rule: the summary layer
+    owns these fields and a detail parse may only fill gaps, never overwrite. Series
+    membership is not among them - it stays with the summaries (invariant 11) - and neither
+    is `league_id`, which is a foreign key into a table the summary layer populates: writing
+    an id for a league we hold no row for would fail the insert.
+    """
+    if not rows:
+        return
+    statement = insert(Match).values(rows)
+    await session.execute(
+        statement.on_conflict_do_update(
+            index_elements=[Match.match_id],
+            set_={
+                column: func.coalesce(getattr(Match, column), getattr(statement.excluded, column))
+                for column in (
+                    "radiant_win",
+                    "start_time",
+                    "duration",
+                    "radiant_team_id",
+                    "dire_team_id",
+                )
+            },
+        )
+    )
 
 
 async def _enrich_matches(session: AsyncSession, rows: list[dict[str, Any]]) -> None:

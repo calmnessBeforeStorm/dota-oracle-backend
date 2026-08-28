@@ -18,6 +18,7 @@ docs/superpowers/specs/2026-08-27-stratz-adapter-design.md - which is why the so
 was fetched from is part of its identity in `raw_matches` and never merged away.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -95,19 +96,20 @@ async def count_missing_details(
     return len((await session.execute(statement)).scalars().all())
 
 
-async def run_details_backfill(
+async def fetch_details(
     client: MatchDetailSource,
     session_factory: async_sessionmaker[AsyncSession],
-    limit: int = 100,
-    newest_first: bool = True,
-    source: RawSource = RawSource.OPENDOTA_MATCH,
+    match_ids: Sequence[int],
+    source: RawSource,
 ) -> DetailsReport:
-    """Fetch detail payloads for maps that lack one. Safe to stop at any point."""
-    report = DetailsReport()
+    """Fetch and store one payload per id. Safe to stop at any point.
 
-    async with session_factory() as session:
-        match_ids = await select_matches_missing_details(session, limit, newest_first, source)
-    report.requested = len(match_ids)
+    Split out from the backfill because the same loop serves a second question: not "which
+    maps are missing a payload" but "which matches do we owe an outcome for" (see
+    `app.ingestion.workers.outcomes`). Only the list of ids differs, and the parts that must
+    not diverge - rate-limit handling, per-match commits - are exactly the parts here.
+    """
+    report = DetailsReport(requested=len(match_ids))
 
     log.info("details.start", requested=report.requested, source=str(source))
 
@@ -136,10 +138,25 @@ async def run_details_backfill(
             await session.commit()
         report.fetched += 1
 
+    log.info("details.done", source=str(source), **report.as_log_fields())
+    return report
+
+
+async def run_details_backfill(
+    client: MatchDetailSource,
+    session_factory: async_sessionmaker[AsyncSession],
+    limit: int = 100,
+    newest_first: bool = True,
+    source: RawSource = RawSource.OPENDOTA_MATCH,
+) -> DetailsReport:
+    """Fetch detail payloads for maps that lack one."""
+    async with session_factory() as session:
+        match_ids = await select_matches_missing_details(session, limit, newest_first, source)
+
+    report = await fetch_details(client, session_factory, match_ids, source)
+
     async with session_factory() as session:
         report.remaining = await count_missing_details(session, source)
-
-    log.info("details.done", source=str(source), **report.as_log_fields())
     return report
 
 

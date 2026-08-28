@@ -21,6 +21,7 @@ from app.features.featurize import featurize
 from app.features.prematch import rebuild_prematch
 from app.ingestion.clients.liquipedia import LiquipediaClient
 from app.ingestion.clients.opendota import OpenDotaClient
+from app.ingestion.clients.stratz import StratzClient
 from app.ingestion.liquipedia.sync import (
     refresh_league_meta,
     refresh_stages,
@@ -41,6 +42,10 @@ from app.ingestion.workers.details import (
     DETAIL_SOURCES,
     count_missing_details,
     run_details_backfill,
+)
+from app.ingestion.workers.outcomes import (
+    count_unresolved_predictions,
+    resolve_outcomes,
 )
 
 #: ~100 matches per call at 60 req/min, so a page costs about a second of wall clock.
@@ -76,6 +81,25 @@ async def cmd_catch_up(max_pages: int) -> None:
     print(f"pages fetched:   {report.pages}")
     print(f"rows written:    {report.rows}")
     print(f"stopped because: {report.stopped_because}")
+
+
+async def cmd_resolve_outcomes(limit: int) -> None:
+    """Fetch the matches behind predictions we cannot score yet.
+
+    Asks STRATZ per id instead of waiting for the summary feed to sweep past. Measured
+    2026-08-28: 220 predicted matches sat above the top of OpenDota's /proMatches, which had
+    not moved in ten hours - the dashboard was not waiting for time to pass, it was waiting
+    for something that had no schedule.
+    """
+    async with StratzClient() as client:
+        report = await resolve_outcomes(client, get_session_factory(), limit=limit)
+
+    print(f"requested:       {report.requested}")
+    print(f"fetched:         {report.fetched}")
+    print(f"failed:          {report.failed}")
+    print(f"still unscored:  {report.remaining}")
+    print(f"stopped because: {report.stopped_because}")
+    print("run `normalize` next: the outcome is read out of the stored payload there.")
 
 
 async def cmd_details(limit: int, oldest_first: bool, source: str) -> None:
@@ -284,6 +308,7 @@ async def cmd_status() -> None:
             )
             for name, (raw_source, _) in DETAIL_SOURCES.items()
         }
+        unscored = await count_unresolved_predictions(session)
 
     print(f"checkpoint (oldest match_id seen): {cursor or '-'}")
     print(f"raw pro-match summaries:           {summaries}")
@@ -292,6 +317,7 @@ async def cmd_status() -> None:
     for name, (fetched, missing) in per_source.items():
         print(f"{name + ' match payloads':<34} {fetched}")
         print(f"{name + ' maps still missing':<34} {missing}")
+    print(f"{'predictions we cannot score yet':<34} {unscored}")
     print()
     for label, count in normalized.items():
         print(f"{label:<34} {count}")
@@ -343,6 +369,13 @@ def main() -> None:
         "--oldest-first",
         action="store_true",
         help="walk history forwards instead of starting from the most recent maps",
+    )
+
+    outcomes = sub.add_parser(
+        "resolve-outcomes", help="fetch matches behind predictions that cannot be scored yet"
+    )
+    outcomes.add_argument(
+        "--limit", type=int, default=200, help="matches to fetch, one API call each"
     )
 
     liquipedia = sub.add_parser(
@@ -411,6 +444,8 @@ def main() -> None:
                 await cmd_catch_up(args.max_pages)
             elif args.command == "details":
                 await cmd_details(args.limit, args.oldest_first, args.source)
+            elif args.command == "resolve-outcomes":
+                await cmd_resolve_outcomes(args.limit)
             elif args.command == "map-leagues":
                 await cmd_map_leagues(args.limit, args.apply, args.escalate)
             elif args.command == "refresh-meta":

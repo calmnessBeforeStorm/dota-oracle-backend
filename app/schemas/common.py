@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.models.enums import SeriesFormat
 
@@ -137,14 +137,52 @@ class MatchDetail(BaseModel):
     timeline: list[TimelineEvent] = []
 
 
-class ModelMetrics(BaseModel):
-    """F6: public calibration dashboard. Averages lie - always report per minute bucket."""
+class MinuteBucketMetrics(BaseModel):
+    """One row of the F6 table. `count` is not decoration: a bucket holding nine rows and
+    one holding nine thousand look identical without it, and the first means nothing."""
 
-    model_version: str
-    log_loss_by_minute: dict[str, float]
-    brier_by_minute: dict[str, float]
-    ece: float
+    bucket: str
+    count: int
+    log_loss: float
+    brier: float
+    accuracy: float
+
+
+class ReliabilityBin(BaseModel):
+    """One point of the calibration curve: what was promised against what happened."""
+
+    predicted: float
+    observed: float
+    count: int
+
+
+class ModelVersionInfo(BaseModel):
+    version: str
     sample_size: int
+
+
+class ModelMetrics(BaseModel):
+    """F6: public calibration dashboard (spec section 8.1).
+
+    Averages lie, so everything is also broken out per minute bucket (spec section 7.2).
+    The headline numbers are nullable rather than zero: nothing has been scored yet is a
+    different statement from perfect log loss, and zero would make the second one.
+    """
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    #: Metrics always describe exactly one model. Pooling versions would produce a curve
+    #: belonging to no model at all.
+    model_version: str
+    sample_size: int
+    matches: int
+    log_loss: float | None = None
+    brier: float | None = None
+    ece: float | None = None
+    by_minute: list[MinuteBucketMetrics] = []
+    reliability: list[ReliabilityBin] = []
+    #: Other versions that have scored predictions, so the page can offer them.
+    versions: list[ModelVersionInfo] = []
 
 
 class TournamentStageInfo(BaseModel):
