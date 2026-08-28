@@ -31,6 +31,17 @@ from collections.abc import Sequence
 
 from app.features.game_state import GameState
 
+#: `tier` and `is_lan` are deliberately absent, and each for its own reason.
+#:
+#: `tier` is a trap rather than a weak feature. Section 5.4 fixes it to 1 at inference,
+#: because the product only serves Tier 1 - so a tier that varies in training and is constant
+#: in production is train/serve skew by construction, which is the mistake that already cost
+#: this project `xp_adv` (invariant 2). Measured before removal: it was the constant 1.0 in
+#: all 3974 featurised matches, so nothing was lost by dropping it.
+#:
+#: `is_lan` is knowable on both sides - `leagues.is_lan` is there and the poller resolves the
+#: league - but nothing has ever filled it. It was the constant 0.0 in all 3974 matches. It
+#: can come back when both the sweep and the live path supply it; a column of zeroes cannot.
 FEATURE_ORDER: tuple[str, ...] = (
     # time
     "minute",
@@ -49,8 +60,6 @@ FEATURE_ORDER: tuple[str, ...] = (
     "radiant_nw_spread",
     "dire_nw_spread",
     # context
-    "tier",
-    "is_lan",
     "game_in_series",
     "is_conditional_game",
     "series_len",
@@ -118,8 +127,6 @@ def build_live_features(state: GameState) -> dict[str, float]:
         "net_worth_diff": float(state.radiant.net_worth - state.dire.net_worth),
         "radiant_nw_spread": _spread(state.radiant.player_net_worths),
         "dire_nw_spread": _spread(state.dire.player_net_worths),
-        "tier": float(state.tier),
-        "is_lan": 0.0 if state.is_lan is None else float(state.is_lan),
         "game_in_series": float(state.series.game_in_series),
         "is_conditional_game": float(state.series.is_conditional_game),
         "series_len": float(state.series.series_format.max_games),
