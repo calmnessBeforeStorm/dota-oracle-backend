@@ -31,7 +31,7 @@ from app.db.models.reference import League, TournamentStage
 from app.db.models.training import Prediction
 from app.db.session import get_session_factory
 from app.domain.series import is_conditional_game
-from app.features.adapters.steam import from_live_league_game
+from app.features.adapters.steam import from_live_league_game, has_scoreboard
 from app.features.game_state import SeriesContext
 from app.features.live import build_live_features
 from app.ingestion.clients.steam import SteamClient
@@ -201,6 +201,7 @@ async def poll_live_games(ctx: dict[str, Any]) -> int:
 
     captured_at = datetime.now(UTC)
     feed: list[dict[str, Any]] = []
+    not_started = 0
 
     async with session_factory() as session:
         league_ids = {int(g.get("league_id", 0) or 0) for g in games if g.get("league_id")}
@@ -222,6 +223,15 @@ async def poll_live_games(ctx: dict[str, Any]) -> int:
                     payload=game,
                 )
             )
+
+            # Before the horn the entry has no scoreboard, and a state built from it says
+            # every building is destroyed. Nothing downstream can tell that apart from a
+            # real state, so it is refused here rather than predicted on. The raw payload is
+            # already stored above - the draft is worth keeping even when the game is not
+            # yet worth scoring.
+            if not has_scoreboard(game):
+                not_started += 1
+                continue
 
             league_id = int(game.get("league_id", 0) or 0)
             # A live game can belong to a league the backfill has never reached, so the
@@ -266,5 +276,11 @@ async def poll_live_games(ctx: dict[str, Any]) -> int:
     redis = get_redis()
     await redis.set(LIVE_FEED_KEY, orjson.dumps(feed).decode(), ex=LIVE_FEED_TTL)
 
-    log.info("live_poll.tick", games=len(games), predicted=len(feed), new_leagues=discovered)
+    log.info(
+        "live_poll.tick",
+        games=len(games),
+        predicted=len(feed),
+        drafting=not_started,
+        new_leagues=discovered,
+    )
     return len(feed)
