@@ -23,4 +23,9 @@ class RawSource(StrEnum):
 class Checkpoint(StrEnum):
     """Keys in `ingest_checkpoints`. One row per resumable walk."""
 
+    #: How deep into history the backwards walk has gone: the lowest match id stored.
     OPENDOTA_PRO_MATCHES = "opendota_pro_matches"
+    #: The highest match id ever stored. The backwards walk never sees matches played after
+    #: it started, so the catch-up run tracks the other end of the range separately - one
+    #: cursor cannot describe a window that grows at both ends.
+    OPENDOTA_PRO_MATCHES_NEWEST = "opendota_pro_matches_newest"

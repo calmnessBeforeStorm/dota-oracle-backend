@@ -26,6 +26,11 @@ Tier 1 и отдаёт турнирный календарь. Две разны�
 - Фаза 0 закрыта: compose поднимает всё одной командой, `/health` отвечает.
 - Схема БД в миграциях, 18 таблиц.
 - Бэкфилл `/proMatches` → `raw_matches` работает, идемпотентен, резюмируется по чекпойнту.
+  **Он ходит только назад.** Матчи, сыгранные после его старта, подбирает отдельный
+  догоняющий проход `catch-up` (свой чекпойнт `opendota_pro_matches_newest`, стоит на cron
+  раз в час). Без него выборка заканчивается днём старта бэкфилла, и ни один прогноз
+  live-петли невозможно сверить с исходом — замерено: все 212 предсказанных матчей лежали
+  выше самого свежего матча в базе.
 - Нормализация сырья → `leagues` / `teams` / `series` / `matches` работает, включая
   нумерацию карт в серии и счёт серии со сменой сторон.
 - Детали матчей (`/matches/{id}`) грузятся и разбираются в `match_players`,
@@ -263,7 +268,8 @@ docker compose exec api alembic revision --autogenerate -m "описание"
 docker compose exec api alembic upgrade head
 
 # наполнение БД
-docker compose exec api python -m app.ingestion.cli backfill --pages 50
+docker compose exec api python -m app.ingestion.cli backfill --pages 50   # вглубь истории
+docker compose exec api python -m app.ingestion.cli catch-up             # свежие матчи
 docker compose exec api python -m app.ingestion.cli details --source stratz --limit 700
 docker compose exec api python -m app.ingestion.cli reference   # герои и имена игроков
 docker compose exec api python -m app.ingestion.cli normalize

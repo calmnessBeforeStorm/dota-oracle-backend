@@ -12,9 +12,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models.raw import RawMatch
-from app.ingestion.repository import count_raw_matches, get_checkpoint, upsert_raw_matches
+from app.ingestion.repository import (
+    count_raw_matches,
+    get_checkpoint,
+    set_checkpoint,
+    upsert_raw_matches,
+)
 from app.ingestion.sources import Checkpoint, RawSource
-from app.ingestion.workers.backfill import run_backfill
+from app.ingestion.workers.backfill import catch_up, run_backfill
 
 
 def make_match(match_id: int, **extra: Any) -> dict[str, Any]:
@@ -156,3 +161,84 @@ async def test_page_count_is_honoured(
     report = await run_backfill(client, sessionmaker, pages=pages)
     assert report.pages == pages
     assert len(client.calls) == pages
+
+
+class TestCatchUp:
+    """Matches played *since* the backfill started (spec section 2.2/A1).
+
+    The backwards walk pages with `less_than_match_id` from a cursor that only ever moves
+    further into the past, so a match played today is never fetched by it. Measured on real
+    data: all 212 matches the live poller had predicted sat above the newest match in the
+    table, which is why not one of them could ever be scored against its outcome.
+    """
+
+    async def test_the_first_run_starts_from_the_newest(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        client = FakeOpenDota([10, 20, 30, 40, 50])
+
+        report = await catch_up(client, sessionmaker, max_pages=1)
+
+        assert client.calls[0] is None  # newest first, no cursor
+        assert report.rows == 3
+        async with sessionmaker() as check:
+            assert await get_checkpoint(check, Checkpoint.OPENDOTA_PRO_MATCHES_NEWEST) == "50"
+
+    async def test_a_second_run_costs_one_call_when_nothing_is_new(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The point of the newest cursor: catching up on nothing must not walk history."""
+        client = FakeOpenDota([10, 20, 30, 40, 50])
+        await catch_up(client, sessionmaker, max_pages=5)
+        client.calls.clear()
+
+        second = await catch_up(client, sessionmaker, max_pages=5)
+
+        assert len(client.calls) == 1
+        assert second.stopped_because == "reached matches already stored"
+
+    async def test_it_stops_as_soon_as_it_meets_the_stored_range(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        client = FakeOpenDota([10, 20, 30, 40, 50])
+        await catch_up(client, sessionmaker, max_pages=1)  # stores 50, 40, 30
+        client.calls.clear()
+
+        # Two new matches appear above everything stored.
+        client.history = sorted([10, 20, 30, 40, 50, 60, 70], reverse=True)
+        report = await catch_up(client, sessionmaker, max_pages=10)
+
+        assert report.stopped_because == "reached matches already stored"
+        assert len(client.calls) == 1  # the new ones fit in the first page
+        async with sessionmaker() as check:
+            assert await get_checkpoint(check, Checkpoint.OPENDOTA_PRO_MATCHES_NEWEST) == "70"
+
+    async def test_it_does_not_disturb_the_backwards_cursor(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The two walks describe opposite ends of one range. A catch-up that moved the
+        history cursor would make the next backfill re-fetch what it already had."""
+        async with sessionmaker() as seed:
+            await set_checkpoint(seed, Checkpoint.OPENDOTA_PRO_MATCHES, "12345")
+            await seed.commit()
+
+        await catch_up(FakeOpenDota([10, 20, 30]), sessionmaker, max_pages=2)
+
+        async with sessionmaker() as check:
+            assert await get_checkpoint(check, Checkpoint.OPENDOTA_PRO_MATCHES) == "12345"
+
+    async def test_an_empty_upstream_page_stops_the_run(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        report = await catch_up(FakeOpenDota([]), sessionmaker, max_pages=3)
+
+        assert report.rows == 0
+        assert report.stopped_because == "upstream returned an empty page"
+
+    async def test_rows_land_under_the_pro_matches_source(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await catch_up(FakeOpenDota([10, 20, 30]), sessionmaker, max_pages=1)
+
+        async with sessionmaker() as check:
+            assert await count_raw_matches(check, RawSource.OPENDOTA_PRO_MATCHES) == 3
