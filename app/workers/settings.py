@@ -15,6 +15,7 @@ from app.ingestion.workers.details import backfill_details_hourly, backfill_matc
 from app.ingestion.workers.live_poller import poll_live_games
 from app.ingestion.workers.outcomes import resolve_prediction_outcomes
 from app.ingestion.workers.sync import sync_liquipedia
+from app.workers.drift import check_calibration_drift
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -44,6 +45,7 @@ class WorkerSettings:
         poll_live_games,
         sync_liquipedia,
         resolve_prediction_outcomes,
+        check_calibration_drift,
     ]
     cron_jobs: ClassVar[list[Any]] = [
         # Live loop: every 30s, per spec section 2.4.
@@ -69,6 +71,10 @@ class WorkerSettings:
         # `DETAILS_PER_HOUR`. Never retried: a failed slice is not worth a second helping of
         # somebody else's quota, and the next hour picks up exactly where it stopped.
         cron(backfill_details_hourly, minute=11, max_tries=1),
+        # Phase 7. Once a day rather than hourly: the window is seven days wide, so an
+        # hourly verdict would be the same verdict twenty-four times, and an alert that
+        # repeats itself all day is one people learn to close.
+        cron(check_calibration_drift, hour=6, minute=17, max_tries=2),
     ]
     on_startup = startup
     on_shutdown = shutdown
