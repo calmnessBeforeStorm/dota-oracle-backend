@@ -1,0 +1,86 @@
+name: dota-oracle-prod
+
+# Production. One image serving the SPA and the API, plus the stores and the worker.
+#
+# **Run it from the directory above this one**, because the image needs both repositories in
+# its build context and the frontend is a sibling checkout:
+#
+#     cd .. && docker compose -f dota-oracle-backend/docker-compose.prod.yml up -d --build
+#
+# Development is a different file: `docker-compose.yml` here, which runs the stores and the
+# worker and leaves the API and the SPA to be started by hand.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dota_oracle}
+      POSTGRES_USER: ${POSTGRES_USER:-dota}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dota}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  web:
+    build:
+      # The parent of both repositories. Docker cannot reach outside its context, and the
+      # SPA source is in the sibling checkout.
+      context: ..
+      dockerfile: dota-oracle-backend/Dockerfile.prod
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ENV: production
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The same image with a different command. Sharing it is deliberate: the poller computes
+  # features with the code the API serves predictions from, and two images could drift apart
+  # between deploys - which is train/serve skew wearing a different hat (invariant 2).
+  worker:
+    build:
+      context: ..
+      dockerfile: dota-oracle-backend/Dockerfile.prod
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: arq app.workers.settings.WorkerSettings
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

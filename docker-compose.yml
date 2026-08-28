@@ -1,5 +1,18 @@
 name: dota-oracle
 
+# Development. Everything that has to keep running, and nothing that a person wants to
+# restart by hand.
+#
+# The API and the SPA are deliberately absent: they are the two things being changed all day,
+# and watching a reloader inside a container is strictly worse than watching it in the
+# terminal that owns it. Run them yourself:
+#
+#     uvicorn app.main:app --reload --port 8100
+#     cd ../dota-oracle-frontend && npm run dev
+#
+# Production is a different file and a different image - see docker-compose.prod.yml, where
+# the SPA is built into the same image that serves the API.
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -31,7 +44,19 @@ services:
       timeout: 3s
       retries: 10
 
-  api:
+  # Everything the API image can do apart from serving requests: the test suite, ruff, mypy,
+  # alembic and the ingestion CLI. Not a running service - `docker compose run` starts it for
+  # one command and throws it away:
+  #
+  #     docker compose run --rm tools python -m pytest
+  #     docker compose run --rm tools python -m app.ingestion.cli status
+  #     docker compose run --rm tools alembic revision --autogenerate -m "..."
+  #
+  # It exists because those jobs need Python 3.12, asyncpg and a reachable Postgres, and the
+  # container is where all three are certain to be. Removing the api service would otherwise
+  # have taken the test runner with it.
+  tools:
+    profiles: ["tools"]
     build:
       context: .
       target: dev
@@ -41,22 +66,16 @@ services:
       POSTGRES_PORT: 5432
       REDIS_HOST: redis
       REDIS_PORT: 6379
-    ports:
-      - "${API_PORT:-8100}:8000"
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     volumes:
       - ./app:/app/app
-      # Migrations are authored inside the container (Python 3.12 + asyncpg live there)
-      # but must land on the host, in the repo.
+      # Migrations are authored in here and must land on the host, in the repo.
       - ./alembic:/app/alembic
-      # Tests are mounted so the DB-backed ones can be run inside the container, where
-      # Python 3.12 and asyncpg live.
       - ./tests:/app/tests
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      - ./models:/app/models
+    command: sleep infinity
 
   # Phase 4 training. Not started by `docker compose up` - it is a job a human runs and
   # watches, not a service:

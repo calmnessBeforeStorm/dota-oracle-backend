@@ -115,7 +115,7 @@ Tier 1 и отдаёт турнирный календарь. Две разны�
 она пропускает шум, а через месяц данных глохнет. Абсолютный порог не работает в принципе —
 бейзлайн стоит на ECE ≈ 0.056 постоянно, и любой уровень либо не срабатывает никогда, либо
 срабатывает всегда. Окна считаются **в матчах** (§5.1). Проверка руками:
-`docker compose exec api python -m app.ml.cli drift`.
+`docker compose run --rm tools python -m app.ml.cli drift`.
 
 **Наружу никогда не уходит уверенность.** `get_predictor()` оборачивает любую модель в
 `_Bounded`, который зажимает вероятность в `SERVING_BOUNDS = (0.01, 0.99)`. Замерено по
@@ -365,14 +365,24 @@ Liquipedia банит по IP: кастомный `User-Agent` с контакт
 
 ## Команды
 
+**Разработка и прод — разные файлы и разные образы.**
+
 ```bash
 cp .env.example .env            # STEAM_API_KEY нужен для live-контура
-docker compose up               # postgres + redis + api + worker
+docker compose up -d            # postgres + redis + worker. API и SPA — руками:
+
+# API. Нужен локальный Python 3.12 с установленными зависимостями — на машине владельца
+# стоит 3.14, где asyncpg не собирается, так что venv на 3.12 обязателен:
+#   py -3.12 -m venv .venv && .venv/Scripts/pip install -e ".[dev]"
+uvicorn app.main:app --reload --port 8100
+
+cd ../dota-oracle-frontend && npm run dev
 curl localhost:8100/api/health   # порты нестандартные: 8100 / 5442 / 6389
 
-# Тесты гонять в контейнере: там Python 3.12, asyncpg и живой Postgres, поэтому
-# тесты с БД реально выполняются, а не скипаются.
-docker compose exec api python -m pytest
+# Всё, что умеет образ API, кроме обслуживания запросов: тесты, ruff, mypy, alembic, CLI.
+# `run --rm` поднимает контейнер на одну команду и выбрасывает.
+docker compose run --rm tools python -m pytest
+docker compose run --rm tools python -m app.ingestion.cli status
 
 pip install -e ".[dev]"         # локально, Python 3.12
 pytest                          # тесты (те, что с БД, скипнутся без неё)
@@ -380,28 +390,51 @@ ruff check . && ruff format .   # линт
 mypy app                        # типы (strict)
 
 # миграции создаются внутри контейнера — там Python 3.12 и asyncpg
-docker compose exec api alembic revision --autogenerate -m "описание"
-docker compose exec api alembic upgrade head
+docker compose run --rm tools alembic revision --autogenerate -m "описание"
+docker compose run --rm tools alembic upgrade head
 
 # наполнение БД
-docker compose exec api python -m app.ingestion.cli backfill --pages 50   # вглубь истории
-docker compose exec api python -m app.ingestion.cli catch-up             # свежие матчи
-docker compose exec api python -m app.ingestion.cli details --source stratz --limit 700
-docker compose exec api python -m app.ingestion.cli resolve-outcomes  # исходы под прогнозы
-docker compose exec api python -m app.ingestion.cli reference   # герои и имена игроков
-docker compose exec api python -m app.ingestion.cli normalize
-docker compose exec api python -m app.ingestion.cli status
+docker compose run --rm tools python -m app.ingestion.cli backfill --pages 50   # вглубь истории
+docker compose run --rm tools python -m app.ingestion.cli catch-up             # свежие матчи
+docker compose run --rm tools python -m app.ingestion.cli details --source stratz --limit 700
+docker compose run --rm tools python -m app.ingestion.cli resolve-outcomes  # исходы под прогнозы
+docker compose run --rm tools python -m app.ingestion.cli reference   # герои и имена игроков
+docker compose run --rm tools python -m app.ingestion.cli normalize
+docker compose run --rm tools python -m app.ingestion.cli status
 
 # фаза 2: разметка тиров и форматов
-docker compose exec api python -m app.ingestion.cli map-leagues            # сухой прогон
-docker compose exec api python -m app.ingestion.cli map-leagues --apply    # применить уверенные
-docker compose exec api python -m app.ingestion.cli liquipedia "The International/2024"
+docker compose run --rm tools python -m app.ingestion.cli map-leagues            # сухой прогон
+docker compose run --rm tools python -m app.ingestion.cli map-leagues --apply    # применить уверенные
+docker compose run --rm tools python -m app.ingestion.cli liquipedia "The International/2024"
 ```
 
 **`alembic downgrade base` на рабочей БД не запускать.** Он дропает все таблицы вместе с
 накопленным сырьём, а бэкфилл — это часы закачки и расход месячной квоты OpenDota. Проверку
 отката гоняет CI на заведомо пустой базе; локально достаточно `upgrade head`. Если откат
 действительно нужен — откатывать на одну ревизию (`alembic downgrade -1`), а не до нуля.
+
+### Прод — один образ на всё
+
+Фронт и бэкенд собираются в **один образ**: nginx раздаёт статику SPA и проксирует `/api` и
+`/ws` на uvicorn в том же контейнере. Одним образом, а не двумя, — потому что SPA бесполезен
+без ровно этого API, а API не публичный продукт: версионировать их порознь значит завести
+матрицу совместимости, которую некому вести.
+
+**Собирать из директории выше**, потому что фронтенд — соседний чекаут, а Docker не умеет
+выходить за пределы своего контекста:
+
+```bash
+cd .. && docker compose -f dota-oracle-backend/docker-compose.prod.yml up -d --build
+```
+
+Два процесса в одном контейнере — плата за такую компоновку, и у неё одна настоящая
+опасность: если uvicorn умрёт, nginx продолжит отдавать SPA, контейнер останется «здоровым»,
+а весь `/api` будет отвечать 502. `deploy/entrypoint.sh` это закрывает — ни один из процессов
+не переживает другого, контейнер падает, оркестратор перезапускает. Проверено: убийство
+uvicorn роняет контейнер с кодом 1.
+
+Healthcheck ходит **через nginx**, а не напрямую в uvicorn: так проверяется путь, которым
+идёт посетитель, и сломанный прокси валит проверку, а не прячется за здоровым API.
 
 Docs API: `http://localhost:8100/docs`.
 
@@ -431,5 +464,5 @@ Docs API: `http://localhost:8100/docs`.
   подставляется фикстурой. Проверять так:
 
   ```bash
-  docker compose exec -e STRATZ_API_TOKEN= -e STEAM_API_KEY= api python -m pytest
+  docker compose run --rm -e STRATZ_API_TOKEN= -e STEAM_API_KEY= tools python -m pytest
   ```
