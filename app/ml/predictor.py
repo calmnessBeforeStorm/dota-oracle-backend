@@ -64,19 +64,39 @@ class _Bounded:
 
 
 class BaselinePredictor:
-    """Logistic regression on gold advantage and minute. Hand-fitted placeholder values.
+    """Logistic regression on the time-normalised gold lead and the minute.
 
     Not a real model - a floor. It exists so the whole live loop (poller -> features ->
     prediction -> WebSocket -> UI) can be built and tested before phase 4 delivers weights.
+
+    The coefficients are fitted, not guessed: gradient descent over 21199 snapshots from 491
+    matches (2026-07-07 .. 2026-08-09), scored on 140 later matches it never saw.
+
+    **It used to read raw `gold_adv`, and had the sign of its time term backwards.** The old
+    formula was `0.055 + gold_adv * (0.00018 + 0.000012 * minute)`, which makes a lead worth
+    *more* the later it appears. The data says the opposite, and by a wide margin: a lead
+    above 8k wins 98.0% of the time in minutes 10-20 and 82.9% after minute 40. So the model
+    claimed 99% where the leading side went on to win two games in three.
+
+    On the same holdout, corrected against original:
+
+        log loss   0.5377 against 0.8514
+        ECE        0.0564 against 0.1025
+        minute 30+ 0.454  against 1.299 - worse than a coin flip, which scores 0.693
+        accuracy   0.732  against 0.727 - which is why section 7.2 forbids judging by it
+
+    `gold_adv_norm` was in the feature vector the whole time. Nothing had to be added; the
+    predictor was reading the wrong key out of a dictionary that already held the right one.
     """
 
-    version = "baseline-logistic-0.1"
+    version = "baseline-logistic-0.2"
 
     def predict_proba_radiant(self, features: dict[str, float]) -> float:
-        gold_adv = features.get("gold_adv", 0.0)
+        gold_adv_norm = features.get("gold_adv_norm", 0.0)
         minute = features.get("minute", 0.0)
-        # Gold leads matter more the later they appear; 0.055 is the Radiant side bias.
-        z = 0.055 + gold_adv * (0.00018 + 0.000012 * minute)
+        # The minute term is negative on purpose: with the lead already normalised, a long
+        # game is one neither side has closed out, and those end closer to even.
+        z = 0.067223 + 0.005293 * gold_adv_norm - 0.003425 * minute
         return 1.0 / (1.0 + math.exp(-max(min(z, 20.0), -20.0)))
 
 

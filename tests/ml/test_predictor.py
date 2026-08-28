@@ -7,6 +7,8 @@ every comeback that has ever happened started from a position some number called
 
 import math
 
+from app.features.game_state import GameState, SeriesContext, TeamState
+from app.features.live import build_live_features
 from app.ml.predictor import (
     SERVING_BOUNDS,
     BaselinePredictor,
@@ -17,6 +19,26 @@ from app.ml.predictor import (
 )
 
 LOW, HIGH = SERVING_BOUNDS
+
+
+def state_with(gold_adv: int, minute: int) -> GameState:
+    """An otherwise even game with one side ahead on gold."""
+    side = TeamState(
+        score=0,
+        net_worth=50000,
+        towers_alive={"top": 3, "mid": 3, "bot": 3},
+        barracks_alive={"top": 2, "mid": 2, "bot": 2},
+        player_net_worths=(10000,) * 5,
+    )
+    return GameState(
+        match_id=1,
+        minute=minute,
+        radiant=side,
+        dire=side,
+        gold_adv=gold_adv,
+        xp_adv=0,
+        series=SeriesContext(),
+    )
 
 
 class Certain:
@@ -70,8 +92,8 @@ class TestWrapping:
         reset_predictor()
         try:
             predictor = get_predictor()
-            # A gold lead far past anything a real match produces.
-            extreme = predictor.predict_proba_radiant({"gold_adv": 200_000.0, "minute": 60.0})
+            # A lead far past anything a real match produces.
+            extreme = predictor.predict_proba_radiant({"gold_adv_norm": 5000.0, "minute": 60.0})
         finally:
             reset_predictor()
 
@@ -80,6 +102,36 @@ class TestWrapping:
     def test_the_baseline_itself_still_saturates(self) -> None:
         """Kept honest on purpose: the baseline is spec section 7.3's benchmark and must not
         quietly become a different model because serving grew a guard."""
-        raw = BaselinePredictor().predict_proba_radiant({"gold_adv": 200_000.0, "minute": 60.0})
+        raw = BaselinePredictor().predict_proba_radiant({"gold_adv_norm": 5000.0, "minute": 60.0})
 
         assert raw > HIGH
+
+
+class TestTheBaselineReadsTheRightFeature:
+    """It used to read raw `gold_adv` while `gold_adv_norm` sat beside it in the same dict.
+
+    The cost was not subtle. On a 140-match holdout the old formula scored 1.299 in the
+    30+ minute bucket - worse than the 0.693 of a coin flip - because its time term had the
+    wrong sign and made a late lead count for more, where the data says it counts for less.
+    """
+
+    def test_a_lead_is_worth_less_the_later_it_appears(self) -> None:
+        """Measured: above 8k wins 98.0% of the time in minutes 10-20 and 82.9% after 40."""
+        early = build_live_features(state_with(gold_adv=8000, minute=15))
+        late = build_live_features(state_with(gold_adv=8000, minute=45))
+        model = BaselinePredictor()
+
+        assert model.predict_proba_radiant(early) > model.predict_proba_radiant(late)
+
+    def test_every_feature_it_reads_is_one_the_builder_produces(self) -> None:
+        """The failure mode this guards is silent: an absent key defaults to zero, so a
+        renamed feature does not raise, it just makes the model predict a coin flip forever."""
+        produced = build_live_features(state_with(gold_adv=0, minute=10))
+
+        assert "gold_adv_norm" in produced
+        assert "minute" in produced
+
+    def test_an_even_game_is_close_to_even(self) -> None:
+        features = build_live_features(state_with(gold_adv=0, minute=20))
+
+        assert 0.4 < BaselinePredictor().predict_proba_radiant(features) < 0.6
