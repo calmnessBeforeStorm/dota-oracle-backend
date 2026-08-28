@@ -10,7 +10,7 @@ from arq.cron import cron
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
-from app.ingestion.workers.backfill import backfill_pro_matches
+from app.ingestion.workers.backfill import backfill_pro_matches, catch_up_pro_matches
 from app.ingestion.workers.details import backfill_match_details
 from app.ingestion.workers.live_poller import poll_live_games
 from app.ingestion.workers.sync import sync_liquipedia
@@ -47,6 +47,12 @@ class WorkerSettings:
         cron(poll_live_games, second={0, 30}, run_at_startup=True, max_tries=1),
         # Liquipedia: no more than hourly, everything else served from cache.
         cron(sync_liquipedia, minute=7, max_tries=2),
+        # Pick up matches that finished since the last pass. Hourly and cheap: one call when
+        # nothing is new. Unlike the historical backfill this one is safe to schedule - it
+        # cannot run away, because it stops the moment it reaches what is already stored.
+        # Without it the dataset ends on the day the backfill started and no prediction the
+        # live loop makes can ever be scored against an outcome.
+        cron(catch_up_pro_matches, minute=23, max_tries=2),
     ]
     on_startup = startup
     on_shutdown = shutdown

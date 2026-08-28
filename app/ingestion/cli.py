@@ -36,7 +36,7 @@ from app.ingestion.reference import refresh_heroes, refresh_pro_players
 from app.ingestion.repository import count_raw_matches, get_checkpoint
 from app.ingestion.sources import Checkpoint, RawSource
 from app.ingestion.stages import link_series_to_stages
-from app.ingestion.workers.backfill import run_backfill
+from app.ingestion.workers.backfill import catch_up, run_backfill
 from app.ingestion.workers.details import (
     DETAIL_SOURCES,
     count_missing_details,
@@ -61,6 +61,20 @@ async def cmd_backfill(pages: int, restart: bool) -> None:
     print(f"pages fetched:   {report.pages}")
     print(f"rows written:    {report.rows}")
     print(f"lowest match_id: {report.lowest_match_id}")
+    print(f"stopped because: {report.stopped_because}")
+
+
+async def cmd_catch_up(max_pages: int) -> None:
+    """Pick up matches played since the backfill started.
+
+    The backfill only walks backwards, so without this the dataset stops at the day it began
+    and the live loop's predictions can never be scored against an outcome.
+    """
+    async with OpenDotaClient() as client:
+        report = await catch_up(client, get_session_factory(), max_pages=max_pages)
+
+    print(f"pages fetched:   {report.pages}")
+    print(f"rows written:    {report.rows}")
     print(f"stopped because: {report.stopped_because}")
 
 
@@ -300,6 +314,16 @@ def main() -> None:
         help="ignore the checkpoint and start from the newest matches again",
     )
 
+    catchup = sub.add_parser(
+        "catch-up", help="fetch matches played since the backfill started (newest first)"
+    )
+    catchup.add_argument(
+        "--max-pages",
+        type=int,
+        default=20,
+        help=f"pages to walk before giving up, ~{PAGE_SIZE_HINT} matches each (default: 20)",
+    )
+
     normalize = sub.add_parser(
         "normalize", help="rebuild the normalized layer from stored raw payloads"
     )
@@ -383,6 +407,8 @@ def main() -> None:
         try:
             if args.command == "backfill":
                 await cmd_backfill(args.pages, args.restart)
+            elif args.command == "catch-up":
+                await cmd_catch_up(args.max_pages)
             elif args.command == "details":
                 await cmd_details(args.limit, args.oldest_first, args.source)
             elif args.command == "map-leagues":
