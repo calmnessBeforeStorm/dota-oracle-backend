@@ -10,6 +10,7 @@ self-sufficient, and its `tower_state` / `barracks_state` use the same bitmask l
 OpenDota's final state - so buildings decode through the same code on both sides.
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 from app.features.buildings import LANES, BuildingState, decode_bitmasks
@@ -92,6 +93,27 @@ def _side(scoreboard: dict[str, Any], key: str) -> dict[str, Any]:
     return dict(scoreboard.get(key) or {})
 
 
+def has_scoreboard(game: Mapping[str, Any]) -> bool:
+    """Whether this entry describes a game in progress rather than one still drafting.
+
+    GetLiveLeagueGames lists a match from the moment the lobby forms, and until the horn
+    the entry carries no `scoreboard` at all. Every number then defaults to zero, and a
+    building bitmask of zero does not mean "unknown" - it decodes to every tower and every
+    barracks destroyed, a state in which the game would already be over.
+
+    Measured on our own prediction log: 84 of 86 paired matches had logged a minute-0
+    prediction built from exactly that, so nearly every match on the site opened by telling
+    the model both bases had been razed.
+
+    Across 16303 stored live payloads the API produced exactly two shapes - a full scoreboard
+    with both sides and their bitmasks, or no scoreboard at all. Both sides are checked here
+    anyway: a half-populated scoreboard would fabricate the same state through a different
+    door, and the check costs a dictionary lookup.
+    """
+    scoreboard = game.get("scoreboard") or {}
+    return bool(scoreboard.get("radiant")) and bool(scoreboard.get("dire"))
+
+
 def from_live_league_game(
     game: dict[str, Any],
     series: SeriesContext | None = None,
@@ -103,7 +125,15 @@ def from_live_league_game(
     score and building bitmasks, and the Roshan respawn timer. `gold_adv` is summed from
     player net worth: unlike GetRealtimeStats there is no gold graph, and that difference
     is what the train/serve regression test has to keep honest.
+
+    Raises when the game has not started. Returning a zero-filled state instead would be
+    indistinguishable from a real one downstream, which is how the fabricated minute-0
+    snapshots reached `predictions` in the first place - nothing rejected them because
+    nothing could tell them apart (invariant 13: unknown is not a default value).
     """
+    if not has_scoreboard(game):
+        raise ValueError(f"match {game.get('match_id')} has no scoreboard yet")
+
     scoreboard = game.get("scoreboard") or {}
     radiant_side = _side(scoreboard, "radiant")
     dire_side = _side(scoreboard, "dire")
