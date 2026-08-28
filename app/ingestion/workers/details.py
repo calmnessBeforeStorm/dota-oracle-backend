@@ -198,3 +198,22 @@ async def backfill_match_details(
             source=raw_source,
         )
     return report.fetched
+
+
+#: What the hourly cron asks for, and deliberately short of the STRATZ allowance.
+#:
+#: The same quota covers `resolve_prediction_outcomes`, and that one is not optional: a
+#: prediction nobody can score teaches nothing, and it needs a handful of calls against this
+#: job's hundreds. Measured 2026-08-28, an unbounded run was refused after 476 maps - the
+#: whole hour's room, spent by whichever job happened to start first.
+DETAILS_PER_HOUR = 300
+
+
+async def backfill_details_hourly(ctx: dict[str, Any]) -> int:
+    """arq cron entry point: one bounded slice of the history backfill.
+
+    A separate coroutine because `arq.cron` takes no job arguments, and because the bound is
+    a scheduling decision rather than a default of the worker - a run started by hand should
+    still be free to ask for as much as it likes.
+    """
+    return await backfill_match_details(ctx, limit=DETAILS_PER_HOUR, source="stratz")

@@ -15,6 +15,8 @@ from app.ingestion.normalize import (
 from app.ingestion.repository import count_raw_matches, match_id_of, upsert_raw_matches
 from app.ingestion.sources import RawSource
 from app.ingestion.workers.details import (
+    DETAILS_PER_HOUR,
+    backfill_details_hourly,
     count_missing_details,
     run_details_backfill,
     select_matches_missing_details,
@@ -469,3 +471,32 @@ class TestRawIdentity:
         await session.commit()
         assert written == 1
         assert await count_raw_matches(session, RawSource.STRATZ_MATCH) == 1
+
+
+class TestTheHourlySlice:
+    """The history backfill on a schedule (spec section 10).
+
+    It had none until now and only advanced when somebody ran the CLI, which is not a plan
+    for 23688 remaining maps. The bound is the point: the STRATZ allowance also has to cover
+    `resolve_prediction_outcomes`, and a job that empties it every hour fills the history a
+    day sooner at the cost of never scoring a prediction.
+    """
+
+    async def test_it_asks_for_the_hourly_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        asked: dict[str, Any] = {}
+
+        async def fake(ctx: dict[str, Any], **kwargs: Any) -> int:
+            asked.update(kwargs)
+            return 0
+
+        monkeypatch.setattr("app.ingestion.workers.details.backfill_match_details", fake)
+
+        await backfill_details_hourly({})
+
+        assert asked["limit"] == DETAILS_PER_HOUR
+        assert asked["source"] == "stratz"
+
+    def test_the_bound_leaves_room_for_the_outcome_resolver(self) -> None:
+        """Measured 2026-08-28: an unbounded run was refused after 476 maps, which is the
+        whole hour's room spent by whichever job started first."""
+        assert DETAILS_PER_HOUR < 476
