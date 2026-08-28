@@ -37,8 +37,13 @@ from app.ingestion.sources import RawSource
 
 log = get_logger(__name__)
 
-#: Give up when nothing at all is coming back - something is wrong upstream, and hammering
-#: it is neither polite nor productive.
+#: Give up after this many failures in a row - something is wrong upstream, and hammering it
+#: is neither polite nor productive.
+#:
+#: "In a row" is the correction, not the number. The check used to also require that nothing
+#: had been fetched yet, which meant a run that started fine and hit a wall later never
+#: stopped: the STRATZ backfill worked through 1600 remaining ids at one rejected request
+#: every two seconds, logging a failure each time and reporting exit code 0 at the end.
 CONSECUTIVE_FAILURE_LIMIT = 20
 
 
@@ -110,6 +115,7 @@ async def fetch_details(
     not diverge - rate-limit handling, per-match commits - are exactly the parts here.
     """
     report = DetailsReport(requested=len(match_ids))
+    consecutive_failures = 0
 
     log.info("details.start", requested=report.requested, source=str(source))
 
@@ -125,9 +131,14 @@ async def fetch_details(
             break
         except Exception as exc:
             report.failed += 1
+            consecutive_failures += 1
             log.warning("details.failed", match_id=match_id, error=str(exc))
-            if report.failed >= CONSECUTIVE_FAILURE_LIMIT and report.fetched == 0:
-                report.stopped_because = "upstream failing every request"
+            if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT:
+                report.stopped_because = (
+                    f"upstream failed {consecutive_failures} times in a row "
+                    f"after {report.fetched} matches"
+                )
+                log.warning("details.giving_up", **report.as_log_fields())
                 break
             continue
 
@@ -137,6 +148,7 @@ async def fetch_details(
             await upsert_raw_matches(session, source, [payload])
             await session.commit()
         report.fetched += 1
+        consecutive_failures = 0
 
     log.info("details.done", source=str(source), **report.as_log_fields())
     return report

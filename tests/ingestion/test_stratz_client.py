@@ -7,8 +7,11 @@ fail here - it fails much later, inside the adapter, on some matches and not oth
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
+from tenacity import stop_after_attempt
 
+from app.ingestion.clients.base import BaseClient, RateLimitedError
 from app.ingestion.clients.stratz import MATCH_QUERY, StratzClient
 
 
@@ -84,3 +87,60 @@ async def test_match_query_asks_for_every_field_the_adapter_needs() -> None:
         "parsedDateTime",
     ):
         assert field in MATCH_QUERY
+
+
+class TestRateLimiting:
+    """A 429 on the POST path must arrive as `RateLimitedError`, not as a status error.
+
+    STRATZ is the only client that posts, and `post_json` used to have neither the 429 check
+    nor the retry policy `get_json` has. The consequence was not a crash: its rejections
+    looked like ordinary failures, so the detail backfill kept working through its list at
+    one refused request every two seconds. Callers decide whether to stop by catching this
+    type, so the type is the fix.
+    """
+
+    async def test_a_429_becomes_a_rate_limit_error(
+        self, monkeypatch: pytest.MonkeyPatch, stratz_token: None
+    ) -> None:
+        client = StratzClient()
+
+        async def refuse(path: str, **kwargs: Any) -> httpx.Response:
+            return httpx.Response(
+                429,
+                headers={"Retry-After": "30"},
+                request=httpx.Request("POST", "https://api.stratz.com/graphql"),
+            )
+
+        monkeypatch.setattr(client._client, "post", refuse)
+        # One attempt: the retry policy would otherwise back off for minutes before reraising.
+        monkeypatch.setattr(
+            StratzClient, "post_json", BaseClient.post_json.retry_with(stop=stop_after_attempt(1))
+        )  # type: ignore[attr-defined]
+
+        with pytest.raises(RateLimitedError) as caught:
+            await client.match(1)
+
+        assert caught.value.retry_after == 30
+        await client.aclose()
+
+    async def test_other_failures_stay_status_errors(
+        self, monkeypatch: pytest.MonkeyPatch, stratz_token: None
+    ) -> None:
+        """A 500 is not the server stating a rate, and a caller must not stop a whole
+        backfill over one bad response."""
+        client = StratzClient()
+
+        async def explode(path: str, **kwargs: Any) -> httpx.Response:
+            return httpx.Response(
+                500, request=httpx.Request("POST", "https://api.stratz.com/graphql")
+            )
+
+        monkeypatch.setattr(client._client, "post", explode)
+        monkeypatch.setattr(
+            StratzClient, "post_json", BaseClient.post_json.retry_with(stop=stop_after_attempt(1))
+        )  # type: ignore[attr-defined]
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.match(1)
+
+        await client.aclose()

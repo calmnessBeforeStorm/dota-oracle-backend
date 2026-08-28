@@ -57,6 +57,30 @@ class RateLimitedError(Exception):
         self.retry_after = retry_after
 
 
+def _check(response: httpx.Response) -> None:
+    """Turn a 429 into `RateLimitedError` and any other failure into a redacted status error.
+
+    Separate from `raise_for_status` because a 429 is not an error in the same sense: it is
+    the server stating a rate, and the callers that stop a run rather than push through it
+    key off this exception type.
+    """
+    if response.status_code == 429:
+        retry_after = response.headers.get("Retry-After")
+        raise RateLimitedError(float(retry_after) if retry_after else None)
+    raise_for_status(response)
+
+
+#: Shared by every request method. 429 is retried like the rest, but waits far longer than a
+#: transport hiccup: the server has said it wants less traffic, and honouring that is the
+#: point.
+_retrying = retry(
+    retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError, RateLimitedError)),
+    wait=wait_exponential(multiplier=2, min=2, max=120),
+    stop=stop_after_attempt(4),
+    reraise=True,
+)
+
+
 class BaseClient:
     """Async HTTP client with a minimum interval between requests and backoff on failure."""
 
@@ -97,30 +121,28 @@ class BaseClient:
                 await asyncio.sleep(wait)
             self._last_request_at = asyncio.get_running_loop().time()
 
-    @retry(
-        # 429 included, but it waits far longer than a transport hiccup: the server has
-        # said it wants less traffic, and honouring that is the point.
-        retry=retry_if_exception_type(
-            (httpx.TransportError, httpx.HTTPStatusError, RateLimitedError)
-        ),
-        wait=wait_exponential(multiplier=2, min=2, max=120),
-        stop=stop_after_attempt(4),
-        reraise=True,
-    )
+    @_retrying
     async def get_json(self, path: str, **params: Any) -> Any:
         await self._throttle()
         query = {k: v for k, v in params.items() if v is not None}
         response = await self._client.get(path, params=query)
-        if response.status_code == 429:
-            retry_after = response.headers.get("Retry-After")
-            raise RateLimitedError(float(retry_after) if retry_after else None)
-        raise_for_status(response)
+        _check(response)
         return response.json()
 
+    @_retrying
     async def post_json(self, path: str, payload: dict[str, Any]) -> Any:
+        """Same policy as `get_json`, and not by accident.
+
+        It used to have neither the retry nor the 429 check, which mattered because the one
+        client that posts is STRATZ - the source the whole training set comes from. Its 429s
+        arrived as plain status errors, so the detail backfill counted them as ordinary
+        failures and worked through the rest of its list at one rejected request every two
+        seconds. That is the IP ban this module exists to avoid, reached by the route of
+        looking like it was still working.
+        """
         await self._throttle()
         response = await self._client.post(path, json=payload)
-        raise_for_status(response)
+        _check(response)
         return response.json()
 
 
