@@ -11,7 +11,7 @@ from arq.cron import cron
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.ingestion.workers.backfill import backfill_pro_matches, catch_up_pro_matches
-from app.ingestion.workers.details import backfill_match_details
+from app.ingestion.workers.details import backfill_details_hourly, backfill_match_details
 from app.ingestion.workers.live_poller import poll_live_games
 from app.ingestion.workers.outcomes import resolve_prediction_outcomes
 from app.ingestion.workers.sync import sync_liquipedia
@@ -40,6 +40,7 @@ class WorkerSettings:
     functions: ClassVar[list[Any]] = [
         backfill_pro_matches,
         backfill_match_details,
+        backfill_details_hourly,
         poll_live_games,
         sync_liquipedia,
         resolve_prediction_outcomes,
@@ -60,6 +61,14 @@ class WorkerSettings:
         # dashboard or the drift alert can be built on, and a served prediction nobody
         # ever scores is a prediction that taught us nothing.
         cron(resolve_prediction_outcomes, minute=41, max_tries=2),
+        # The history backfill, which had no schedule at all and only advanced when somebody
+        # ran the CLI. 23688 maps remain, so at a few hundred an hour it is days of work that
+        # nobody should have to babysit.
+        #
+        # Bounded per run rather than left to fetch until it is refused - see
+        # `DETAILS_PER_HOUR`. Never retried: a failed slice is not worth a second helping of
+        # somebody else's quota, and the next hour picks up exactly where it stopped.
+        cron(backfill_details_hourly, minute=11, max_tries=1),
     ]
     on_startup = startup
     on_shutdown = shutdown
