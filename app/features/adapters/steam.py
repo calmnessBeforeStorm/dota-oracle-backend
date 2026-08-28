@@ -56,6 +56,7 @@ def from_realtime_stats(
     payload: dict[str, Any],
     series: SeriesContext | None = None,
     prematch_prior: float | None = None,
+    is_lan: bool | None = None,
 ) -> GameState:
     """Build a GameState from one GetRealtimeStats response.
 
@@ -86,6 +87,10 @@ def from_realtime_stats(
         xp_adv=0,
         series=series or SeriesContext(),
         prematch_prior=prematch_prior,
+        # Not in the payload: it comes from `leagues`, which the caller has already resolved.
+        # None means the league is unmapped, and the vector says so rather than guessing
+        # "online" - which is what three quarters of our matches would otherwise claim.
+        is_lan=is_lan,
     )
 
 
@@ -118,6 +123,7 @@ def from_live_league_game(
     game: dict[str, Any],
     series: SeriesContext | None = None,
     prematch_prior: float | None = None,
+    is_lan: bool | None = None,
 ) -> GameState:
     """Build a GameState from one GetLiveLeagueGames entry - the primary live channel.
 
@@ -167,4 +173,8 @@ def from_live_league_game(
         dire_picks=tuple(int(h) for h in dire_side.get("picks_hero_ids", ()) or ()),
         series=series or SeriesContext(),
         prematch_prior=prematch_prior,
+        # Not in the payload: it comes from `leagues`, which the caller has already resolved.
+        # None means the league is unmapped, and the vector says so rather than guessing
+        # "online" - which is what three quarters of our matches would otherwise claim.
+        is_lan=is_lan,
     )

@@ -49,6 +49,14 @@ class SeriesContext:
     is_conditional_game: bool = False
     radiant_series_wins: int = 0
     dire_series_wins: int = 0
+    #: Whether `series_format` was known or filled in.
+    #:
+    #: An unknown format collapses to Bo1 here, because a feature vector of floats has no way
+    #: to say "unknown" - and a Bo1 has one map, so `is_conditional_game` is then forced to
+    #: False. Measured: 19.4% of maps in series with a known format are conditional against
+    #: 0.1% of the filled ones, so without this flag that feature does not mean "this map is
+    #: decisive", it means "this map is decisive *and* we mapped its league to Liquipedia".
+    format_known: bool = False
 
 
 @dataclass(frozen=True)

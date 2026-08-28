@@ -88,11 +88,13 @@ class TestRoshanIsGone:
         empty = make_state(roshan_kills=0, aegis_holder_is_radiant=None, roshan_respawn_in=None)
         assert build_live_features(held) == build_live_features(empty)
 
-    def test_the_vector_is_25_long(self) -> None:
-        """30 originally, 27 after Roshan left with no live source, 25 after `tier` and
-        `is_lan` were measured to be constants in all 3974 featurised matches."""
-        assert len(FEATURE_ORDER) == 25
-        assert len(set(FEATURE_ORDER)) == 25
+    def test_the_vector_is_28_long(self) -> None:
+        """30 originally; 27 once Roshan left for want of a live source; 25 once `tier` and
+        `is_lan` were measured to be constants; 28 once `is_lan` came back filled from both
+        sides, each of it and the series format paired with a flag saying whether it is
+        known at all."""
+        assert len(FEATURE_ORDER) == 28
+        assert len(set(FEATURE_ORDER)) == 28
         assert set(build_live_features(make_state())) == set(FEATURE_ORDER)
 
 
@@ -107,20 +109,45 @@ class TestConstantsAreNotFeatures:
     def test_tier_is_not_in_the_vector(self) -> None:
         assert "tier" not in FEATURE_ORDER
 
-    def test_is_lan_is_not_in_the_vector(self) -> None:
-        """Knowable on both sides, but nothing has ever filled it: it measured 0.0 in every
-        one of 3974 matches. It can come back when the sweep and the live path both supply
-        it; a column of zeroes cannot."""
-        assert "is_lan" not in FEATURE_ORDER
-
-    def test_the_raw_fields_stay_on_the_state(self) -> None:
+    def test_the_raw_field_stays_on_the_state(self) -> None:
         """Same rule as Roshan: the state keeps what sources report, the vector takes only
         what a model may see."""
-        state = make_state()
-        assert hasattr(state, "tier")
-        assert hasattr(state, "is_lan")
+        assert hasattr(make_state(), "tier")
 
-    def test_changing_them_no_longer_changes_the_vector(self) -> None:
-        assert build_live_features(make_state(tier=1, is_lan=None)) == build_live_features(
-            make_state(tier=3, is_lan=True)
+    def test_changing_the_tier_does_not_change_the_vector(self) -> None:
+        assert build_live_features(make_state(tier=1)) == build_live_features(make_state(tier=3))
+
+
+class TestUnknownIsNotAValue:
+    """A vector of floats cannot say "unknown", so it says it in a second column.
+
+    Without that, an absent fact and a real one share a number and the model learns our
+    labelling coverage instead of the game. Measured on `is_conditional_game`: 19.4% of maps
+    in series with a known format are decisive, against 0.1% of the maps whose format was
+    filled in - so unpaired, that feature means "decisive *and* we mapped its league".
+    """
+
+    def test_an_unknown_venue_is_distinguishable_from_an_online_one(self) -> None:
+        unknown = build_live_features(make_state(is_lan=None))
+        online = build_live_features(make_state(is_lan=False))
+
+        assert unknown["is_lan"] == online["is_lan"] == 0.0
+        assert unknown["is_lan_known"] == 0.0
+        assert online["is_lan_known"] == 1.0
+
+    def test_a_lan_is_reported_as_known(self) -> None:
+        lan = build_live_features(make_state(is_lan=True))
+
+        assert (lan["is_lan"], lan["is_lan_known"]) == (1.0, 1.0)
+
+    def test_a_filled_format_is_distinguishable_from_a_real_bo1(self) -> None:
+        filled = build_live_features(
+            make_state(series=SeriesContext(series_format=SeriesFormat.BO1, format_known=False))
         )
+        real = build_live_features(
+            make_state(series=SeriesContext(series_format=SeriesFormat.BO1, format_known=True))
+        )
+
+        assert filled["series_len"] == real["series_len"]
+        assert filled["series_format_known"] == 0.0
+        assert real["series_format_known"] == 1.0
