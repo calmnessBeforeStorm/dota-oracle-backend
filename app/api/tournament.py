@@ -13,6 +13,7 @@ grouped under the stage it belongs to.
 """
 
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by
@@ -31,6 +32,33 @@ async def _team_names(session: AsyncSession, team_ids: Sequence[int]) -> dict[in
         await session.execute(select(Team.team_id, Team.name).where(Team.team_id.in_(wanted)))
     ).all()
     return {int(team_id): name for team_id, name in rows}
+
+
+#: How long after its last map a series is taken to be over.
+#:
+#: A Bo5 runs about four hours and the gap between maps is under an hour, so nothing that
+#: waits half a day is still being played. Generous on purpose: calling a live series decided
+#: is a visible error, while waiting a few extra hours costs nothing.
+SETTLED_AFTER = timedelta(hours=12)
+
+
+def outcome_from_maps(
+    score_a: int, score_b: int, last_map_at: datetime | None, now: datetime
+) -> bool:
+    """Whether a settled series can be called from its map score alone.
+
+    The format is what tells you a series has *finished* - two won maps end a Bo3 and not a
+    Bo5. But once nobody is playing any more, the maps that exist are all the maps there
+    were, and the side that won more of them won the series. Measured: 11600 of our 13588
+    series can be read this way, against 1577 that carry a recorded winner.
+
+    A level score is deliberately not called. 1-1 is a drawn Bo2 or an abandoned Bo3, and
+    only the format separates those (spec section 5.5), so it stays unknown - which is a
+    third state the UI already renders.
+    """
+    if score_a == score_b or last_map_at is None:
+        return False
+    return now - last_map_at >= SETTLED_AFTER
 
 
 async def series_for(session: AsyncSession, league_id: int) -> list[SeriesResult]:
@@ -80,24 +108,54 @@ async def series_for(session: AsyncSession, league_id: int) -> list[SeriesResult
     ).all()
 
     names = await _team_names(session, [t for row in rows for t in (row[3], row[4])])
+    now = datetime.now(UTC)
+    last_map = await _last_map_at(session, [int(row[0]) for row in rows])
 
-    return [
-        SeriesResult(
-            series_id=int(row[0]),
-            stage_id=row[1],
-            format=row[2],
-            team_a=TeamBrief(team_id=row[3], name=names.get(int(row[3])) if row[3] else None),
-            team_b=TeamBrief(team_id=row[4], name=names.get(int(row[4])) if row[4] else None),
-            score_a=int(row[5]),
-            score_b=int(row[6]),
-            winner_team_id=row[7],
-            is_draw=bool(row[8]),
-            played_at=row[9],
-            maps=int(row[10]),
-            match_ids=[int(m) for m in (row[11] or [])],
+    results: list[SeriesResult] = []
+    for row in rows:
+        score_a, score_b = int(row[5]), int(row[6])
+        winner, source = row[7], ("recorded" if row[7] is not None else None)
+        if (
+            winner is None
+            and not row[8]
+            and outcome_from_maps(score_a, score_b, last_map.get(int(row[0])), now)
+        ):
+            winner = row[3] if score_a > score_b else row[4]
+            source = "maps"
+
+        results.append(
+            SeriesResult(
+                series_id=int(row[0]),
+                stage_id=row[1],
+                format=row[2],
+                team_a=TeamBrief(team_id=row[3], name=names.get(int(row[3])) if row[3] else None),
+                team_b=TeamBrief(team_id=row[4], name=names.get(int(row[4])) if row[4] else None),
+                score_a=score_a,
+                score_b=score_b,
+                winner_team_id=winner,
+                outcome_source=source,
+                is_draw=bool(row[8]),
+                played_at=row[9],
+                maps=int(row[10]),
+                match_ids=[int(m) for m in (row[11] or [])],
+            )
         )
-        for row in rows
-    ]
+    return results
+
+
+async def _last_map_at(session: AsyncSession, series_ids: list[int]) -> dict[int, datetime]:
+    """When each series last had a map start. `min` is already in the main query; this is the
+    other end, and only this one says whether anybody is still playing."""
+    if not series_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(Match.series_id, func.max(Match.start_time))
+            .where(Match.series_id.in_(series_ids))
+            .group_by(Match.series_id)
+        )
+    ).all()
+    return {int(series_id): at for series_id, at in rows if at is not None}
 
 
 def participants_from(results: Sequence[SeriesResult]) -> list[TournamentParticipant]:

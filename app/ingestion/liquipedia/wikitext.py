@@ -18,6 +18,7 @@ section 3 anticipates.
 """
 
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date
 
@@ -78,6 +79,18 @@ class StageFormat:
 _MONTH_DAY = re.compile(r"([A-Za-z]{3,9})\s+(\d{1,2})")
 _YEAR = re.compile(r"(20\d{2})")
 
+#: "August 13 - 16", where the month is written once and only the days are ranged.
+#:
+#: `_MONTH_DAY` needs a month before every day, so it read that as a single date and the
+#: stage window collapsed to one day. The International 2026 is what showed it: its group
+#: stage was stored as 13 August to 13 August, so `link-stages` found no stage covering the
+#: maps played on the 14th to the 16th and left all 58 series without a format.
+#: The dashes are written as escapes because Liquipedia uses en and em dashes as freely as
+#: hyphens, and a literal one is invisible in a diff.
+_MONTH_DAY_RANGE = re.compile(
+    "([A-Za-z]{3,9})\\s+(\\d{1,2})\\s*(?:[-\\u2013\\u2014]|to)\\s*(\\d{1,2})\\b"
+)
+
 
 def parse_stage_dates(
     text: str, fallback_year: int | None = None
@@ -99,14 +112,20 @@ def parse_stage_dates(
         return None, None
 
     found: list[date] = []
-    for month_name, day in _MONTH_DAY.findall(text):
-        month = month_number(month_name)
+
+    def keep(month: int | None, day: str) -> None:
         if month is None:
-            continue
-        try:
+            return
+        with suppress(ValueError):  # 31 February and friends
             found.append(date(year, month, int(day)))
-        except ValueError:  # 31 February and friends
-            continue
+
+    for month_name, first, last in _MONTH_DAY_RANGE.findall(text):
+        month = month_number(month_name)
+        keep(month, first)
+        keep(month, last)
+
+    for month_name, day in _MONTH_DAY.findall(text):
+        keep(month_number(month_name), day)
 
     if not found:
         return None, None

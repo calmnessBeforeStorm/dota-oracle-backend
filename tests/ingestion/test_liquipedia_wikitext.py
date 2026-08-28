@@ -6,6 +6,7 @@ data cannot express at all), a stage that mixes a Bo5 grand final into a Bo3 bra
 the lowercase spelling of the template.
 """
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from app.db.models.enums import SeriesFormat, StageType
 from app.ingestion.liquipedia.wikitext import (
     classify_stage,
     extract_format_section,
+    parse_stage_dates,
     parse_stage_formats,
 )
 
@@ -193,3 +195,46 @@ class TestHtmlLists:
         body = "== Format ==\n<ul><li></li><li>'''A''' {{Abbr/Bo1}}</li></ul>"
 
         assert extract_format_section(body) == "*'''A''' {{Abbr/Bo1}}"
+
+
+class TestDayRanges:
+    """A month written once with only the days ranged: "August 13 - 16".
+
+    `_MONTH_DAY` wants a month before every day, so it read that as a single date and the
+    stage window collapsed to one. The International 2026 showed it: its group stage was
+    stored as 13 August to 13 August, so `link-stages` found no stage covering the maps
+    played on the 14th to the 16th and all 58 series stayed without a format.
+    """
+
+    def test_a_day_range_keeps_both_ends(self) -> None:
+        assert parse_stage_dates("''(August 13 - 16)''", 2026) == (
+            date(2026, 8, 13),
+            date(2026, 8, 16),
+        )
+
+    def test_an_en_dash_counts_too(self) -> None:
+        """Liquipedia uses en and em dashes as freely as hyphens."""
+        text = "''(August 13 – 16)''"  # noqa: RUF001 - the ambiguous dash is the point
+
+        assert parse_stage_dates(text, 2026) == (date(2026, 8, 13), date(2026, 8, 16))
+
+    def test_an_em_dash_counts_too(self) -> None:
+        text = "''(August 13 — 16)''"
+
+        assert parse_stage_dates(text, 2026) == (date(2026, 8, 13), date(2026, 8, 16))
+
+    def test_a_full_range_still_works(self) -> None:
+        """The shape that already worked must keep working."""
+        assert parse_stage_dates("''(May 13 - May 17)''", 2023) == (
+            date(2023, 5, 13),
+            date(2023, 5, 17),
+        )
+
+    def test_a_range_across_months_is_not_folded_into_one(self) -> None:
+        assert parse_stage_dates("''(August 30 - September 2)''", 2026) == (
+            date(2026, 8, 30),
+            date(2026, 9, 2),
+        )
+
+    def test_a_single_date_stays_a_single_date(self) -> None:
+        assert parse_stage_dates("''(August 13)''", 2026) == (date(2026, 8, 13), date(2026, 8, 13))
