@@ -339,7 +339,52 @@ class TestRateLimiting:
 
         assert report.fetched == 0
         assert len(client.calls) == 20  # the give-up limit, not all forty
-        assert report.stopped_because == "upstream failing every request"
+        assert "20 times in a row" in report.stopped_because
+
+    async def test_it_gives_up_even_after_a_good_start(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The check used to also require that nothing had been fetched, so a run that
+        started fine and hit a wall later never stopped. Observed on the real STRATZ
+        backfill: it fetched 2000-odd maps, ran into the hourly allowance, and then worked
+        through the remaining 1600 ids at one rejected request every two seconds - logging a
+        failure each time and exiting 0. That is how an IP ban is earned by a process that
+        looks like it is still working."""
+        await upsert_raw_matches(
+            session,
+            RawSource.OPENDOTA_PRO_MATCHES,
+            [summary(i, offset_seconds=i * 60) for i in range(1, 61)],
+        )
+        await session.commit()
+        await normalize_pro_matches(sessionmaker)
+
+        # Newest first, so ids 60..56 succeed and everything older fails.
+        client = FakeOpenDota(fail_on=set(range(1, 56)))
+        report = await run_details_backfill(client, sessionmaker, limit=60)
+
+        assert report.fetched == 5
+        assert len(client.calls) == 25  # five good, then twenty in a row
+        assert "20 times in a row" in report.stopped_because
+
+    async def test_a_scattered_failure_does_not_stop_the_run(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The counter resets on success. A handful of unparseable maps spread through the
+        history is normal and must not end a backfill that is otherwise working."""
+        await upsert_raw_matches(
+            session,
+            RawSource.OPENDOTA_PRO_MATCHES,
+            [summary(i, offset_seconds=i * 60) for i in range(1, 41)],
+        )
+        await session.commit()
+        await normalize_pro_matches(sessionmaker)
+
+        client = FakeOpenDota(fail_on={5, 10, 15, 20, 25, 30})
+        report = await run_details_backfill(client, sessionmaker, limit=40)
+
+        assert report.failed == 6
+        assert report.fetched == 34
+        assert report.stopped_because == "finished the list"
 
 
 class TestPerSourceBookkeeping:
