@@ -88,7 +88,39 @@ class TestRoshanIsGone:
         empty = make_state(roshan_kills=0, aegis_holder_is_radiant=None, roshan_respawn_in=None)
         assert build_live_features(held) == build_live_features(empty)
 
-    def test_the_vector_is_27_long(self) -> None:
-        assert len(FEATURE_ORDER) == 27
-        assert len(set(FEATURE_ORDER)) == 27
+    def test_the_vector_is_25_long(self) -> None:
+        """30 originally, 27 after Roshan left with no live source, 25 after `tier` and
+        `is_lan` were measured to be constants in all 3974 featurised matches."""
+        assert len(FEATURE_ORDER) == 25
+        assert len(set(FEATURE_ORDER)) == 25
         assert set(build_live_features(make_state())) == set(FEATURE_ORDER)
+
+
+class TestConstantsAreNotFeatures:
+    """A column with one value in it teaches nothing, and one of these was worse than that.
+
+    `tier` is fixed to 1 at inference by section 5.4 - the product only serves Tier 1 - so a
+    tier that varied in training would be train/serve skew by construction, which is exactly
+    what invariant 2 forbids and what already cost this project `xp_adv`.
+    """
+
+    def test_tier_is_not_in_the_vector(self) -> None:
+        assert "tier" not in FEATURE_ORDER
+
+    def test_is_lan_is_not_in_the_vector(self) -> None:
+        """Knowable on both sides, but nothing has ever filled it: it measured 0.0 in every
+        one of 3974 matches. It can come back when the sweep and the live path both supply
+        it; a column of zeroes cannot."""
+        assert "is_lan" not in FEATURE_ORDER
+
+    def test_the_raw_fields_stay_on_the_state(self) -> None:
+        """Same rule as Roshan: the state keeps what sources report, the vector takes only
+        what a model may see."""
+        state = make_state()
+        assert hasattr(state, "tier")
+        assert hasattr(state, "is_lan")
+
+    def test_changing_them_no_longer_changes_the_vector(self) -> None:
+        assert build_live_features(make_state(tier=1, is_lan=None)) == build_live_features(
+            make_state(tier=3, is_lan=True)
+        )
