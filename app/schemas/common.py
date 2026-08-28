@@ -32,6 +32,11 @@ class SeriesBrief(BaseModel):
     score_a: int = 0
     score_b: int = 0
     winner_team_id: int | None = None
+    #: Where `winner_team_id` came from. "recorded" is Liquipedia's stage data; "maps" is
+    #: inferred from a settled series' map score; None means nobody knows. The distinction is
+    #: shown to the reader rather than smoothed away - an inferred result is worth having and
+    #: worth labelling.
+    outcome_source: str | None = None
     is_draw: bool = False
     game_in_series: int = 1
     is_conditional_game: bool = False
@@ -241,6 +246,11 @@ class SeriesResult(BaseModel):
     score_a: int = 0
     score_b: int = 0
     winner_team_id: int | None = None
+    #: Where `winner_team_id` came from. "recorded" is Liquipedia's stage data; "maps" is
+    #: inferred from a settled series' map score; None means nobody knows. The distinction is
+    #: shown to the reader rather than smoothed away - an inferred result is worth having and
+    #: worth labelling.
+    outcome_source: str | None = None
     is_draw: bool = False
     #: When the first map was played. Null for a series whose maps we do not hold.
     played_at: datetime | None = None

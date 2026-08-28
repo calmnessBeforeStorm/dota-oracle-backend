@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.api.tournament import participants_from, series_for
+from app.api.tournament import outcome_from_maps, participants_from, series_for
 from app.db.models.matches import Match, Series
 from app.db.models.reference import League, Team
 from app.schemas.common import SeriesResult, TeamBrief
@@ -232,3 +232,40 @@ class TestSeriesQuery:
         results = await series_for(session, LEAGUE)
 
         assert results[0].match_ids == []
+
+
+class TestOutcomeFromMapScore:
+    """Reading a finished series off its map score (spec section 5.5).
+
+    The format is what tells you a series has *ended* - two won maps end a Bo3 and not a Bo5
+    - so the score cannot be read while anybody is still playing. Once nothing has been
+    played for half a day, though, the maps that exist are all the maps there were.
+
+    Measured: 11600 of 13588 series can be read this way, against 1577 carrying a recorded
+    winner. The International 2026 is the case that raised it - a mapped Tier 1 tournament
+    showing every one of its sixteen teams at 0-0-0 while all 58 of its series had an
+    unequal map score.
+    """
+
+    SETTLED = BASE - timedelta(days=4)
+    JUST_PLAYED = BASE - timedelta(minutes=30)
+
+    def test_a_settled_series_is_decided_by_its_maps(self) -> None:
+        assert outcome_from_maps(2, 0, self.SETTLED, BASE)
+
+    def test_a_series_still_being_played_is_not(self) -> None:
+        """The whole reason the format matters: 2-0 is a finished Bo3 and a live Bo5."""
+        assert not outcome_from_maps(2, 0, self.JUST_PLAYED, BASE)
+
+    def test_a_level_score_is_never_called(self) -> None:
+        """1-1 is a drawn Bo2 or an abandoned Bo3, and only the format separates them."""
+        assert not outcome_from_maps(1, 1, self.SETTLED, BASE)
+
+    def test_a_series_with_no_maps_is_not_called(self) -> None:
+        assert not outcome_from_maps(0, 0, None, BASE)
+
+    def test_the_boundary_is_generous(self) -> None:
+        """Twelve hours, well past the four a Bo5 takes. Calling a live series decided is a
+        visible error; waiting a few extra hours costs nothing."""
+        assert not outcome_from_maps(2, 0, BASE - timedelta(hours=11), BASE)
+        assert outcome_from_maps(2, 0, BASE - timedelta(hours=13), BASE)
