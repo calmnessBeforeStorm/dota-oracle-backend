@@ -65,5 +65,8 @@ jobs:
     needs: quality
     steps:
       - uses: actions/checkout@v4
+      # `--target base` on purpose. The Dockerfile ends with the `ml` stage (phase-4
+      # training), and a bare `docker build .` builds the last stage - which would ship
+      # LightGBM and scikit-learn in the image that serves requests.
       - name: Build image
-        run: docker build -t dota-oracle-backend:${{ github.sha }} .
+        run: docker build --target base -t dota-oracle-backend:${{ github.sha }} .
