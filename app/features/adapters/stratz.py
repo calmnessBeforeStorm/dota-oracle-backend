@@ -96,6 +96,7 @@ def snapshot_at(
     series: SeriesContext | None = None,
     prematch_prior: float | None = None,
     prematch: Mapping[str, float] | None = None,
+    is_lan: bool | None = None,
 ) -> GameState:
     """One training snapshot. Only information available at `minute` may be read."""
     deaths = match.get("towerDeaths") or []
@@ -114,6 +115,7 @@ def snapshot_at(
         series=series or SeriesContext(),
         prematch=prematch or {},
         prematch_prior=prematch_prior,
+        is_lan=is_lan,
     )
 
 
@@ -123,6 +125,7 @@ def iter_snapshots(
     min_minute: int = 0,
     prematch: Mapping[str, float] | None = None,
     prematch_prior: float | None = None,
+    is_lan: bool | None = None,
 ) -> list[GameState]:
     """Unroll a parsed match into one snapshot per minute.
 
@@ -133,6 +136,6 @@ def iter_snapshots(
         raise ValueError(f"match {match.get('id')} is not parsed, no per-minute series")
     last_minute = int(match.get("durationSeconds", 0)) // 60
     return [
-        snapshot_at(match, m, series, prematch_prior, prematch)
+        snapshot_at(match, m, series, prematch_prior, prematch, is_lan)
         for m in range(min_minute, last_minute + 1)
     ]

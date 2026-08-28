@@ -72,21 +72,27 @@ def _series_context(game: dict[str, Any], fmt: SeriesFormat | None) -> SeriesCon
         ),
         radiant_series_wins=radiant_wins,
         dire_series_wins=dire_wins,
+        format_known=fmt is not None,
     )
 
 
 async def _league_context(
     session: AsyncSession, league_ids: set[int]
-) -> dict[int, tuple[str | None, str, SeriesFormat | None]]:
-    """Name, tier and current stage format per league, from what phase 2 marked up."""
+) -> dict[int, tuple[str | None, str, SeriesFormat | None, bool | None]]:
+    """Name, tier, current stage format and LAN flag per league, from what phase 2 marked up.
+
+    `is_lan` is here because the feature vector needs it and only this table has it. It stays
+    None for an unmapped league, and the vector reports that rather than defaulting to
+    "online" - the same rule the format follows.
+    """
     if not league_ids:
         return {}
 
     leagues = {
-        int(league_id): (name, str(tier))
-        for league_id, name, tier in (
+        int(league_id): (name, str(tier), is_lan)
+        for league_id, name, tier, is_lan in (
             await session.execute(
-                select(League.league_id, League.name, League.tier).where(
+                select(League.league_id, League.name, League.tier, League.is_lan).where(
                     League.league_id.in_(league_ids)
                 )
             )
@@ -110,8 +116,8 @@ async def _league_context(
             formats[int(league_id)] = SeriesFormat(str(default_format))
 
     return {
-        league_id: (name, tier, formats.get(league_id))
-        for league_id, (name, tier) in leagues.items()
+        league_id: (name, tier, formats.get(league_id), is_lan)
+        for league_id, (name, tier, is_lan) in leagues.items()
     }
 
 
@@ -236,11 +242,11 @@ async def poll_live_games(ctx: dict[str, Any]) -> int:
             league_id = int(game.get("league_id", 0) or 0)
             # A live game can belong to a league the backfill has never reached, so the
             # name is genuinely unknown rather than blank - the UI falls back to the id.
-            league_name, tier, fmt = contexts.get(league_id, (None, "unknown", None))
+            league_name, tier, fmt, is_lan = contexts.get(league_id, (None, "unknown", None, None))
             series = _series_context(game, fmt)
 
             try:
-                state = from_live_league_game(game, series=series)
+                state = from_live_league_game(game, series=series, is_lan=is_lan)
                 features = build_live_features(state)
                 p_radiant = predictor.predict_proba_radiant(features)
             except Exception as exc:

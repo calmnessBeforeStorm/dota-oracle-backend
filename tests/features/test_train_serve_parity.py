@@ -43,6 +43,23 @@ from app.features.live import FEATURE_ORDER, build_live_features
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "train_serve_pairs.json"
 
+#: The features read out of a match payload, and so the only ones two sources can disagree
+#: about. Everything else in the vector is looked up from our own tables on both sides.
+COMPARED = (
+    "minute",
+    "log_minute",
+    "gold_adv",
+    "gold_adv_norm",
+    "tower_diff",
+    "barracks_diff",
+    "radiant_towers",
+    "dire_towers",
+    "kill_diff",
+    "net_worth_diff",
+    "radiant_nw_spread",
+    "dire_nw_spread",
+)
+
 REALTIME_SAMPLE: dict[str, object] = {
     "match": {"matchid": 7000000001, "server_steam_id": 90000000000000000, "game_time": 1230},
     "teams": [
@@ -128,24 +145,35 @@ class TestTheFixtureItself:
 
         assert set(build_live_features(snapshot_at(match, 20))) == set(FEATURE_ORDER)
 
-    def test_every_current_feature_was_served(self, paired: list[dict[str, Any]]) -> None:
-        """Containment, not equality, and the difference is a finding rather than a
-        convenience.
+    def test_every_compared_feature_is_still_in_the_vector(self) -> None:
+        """Guards the list above from going stale in the quiet direction: a feature renamed
+        out of `FEATURE_ORDER` would otherwise keep being "compared" against nothing."""
+        assert set(COMPARED) <= set(FEATURE_ORDER)
 
-        These rows carry `roshan_kills`, `aegis_holder` and `roshan_respawn_in`, which the
-        vector no longer has - they were dropped when it went from 30 features to 27. The
-        prediction log is not schema-stable: it spans every feature set ever served, and
-        `model_version` did not change when the vector did, so rows of both shapes sit under
-        `baseline-logistic-0.1`. Harmless for this baseline, which reads only `gold_adv` and
-        `minute`, and worth knowing before anything reads `predictions.features` back as
-        training data.
+    def test_every_compared_feature_was_served(self, paired: list[dict[str, Any]]) -> None:
+        """The features parity is actually about, and only those.
 
-        A feature missing from a served row is the case that must never pass: that is the
-        skew that costs the most, because it reads as a working model right until deployment.
+        `COMPARED` is the part of the vector that is read out of a match payload, and it is
+        the only part that can drift between two sources reading two different payloads.
+        The rest - series context, venue, the pre-match block - is looked up from our own
+        tables on both sides, so it is identical by construction and has nothing to do with
+        skew.
+
+        Whole-vector equality was the first version of this test and it was wrong twice
+        over. These rows carry `roshan_kills`, `aegis_holder` and `roshan_respawn_in`, gone
+        since the vector went from 30 features to 27; and they predate `is_lan_known` and
+        `series_format_known`, added later still. The prediction log is not schema-stable -
+        it spans every feature set ever served, and `model_version` did not always change
+        when the vector did. Asserting on the whole vector would fail every time the vector
+        legitimately changed, which is how a test gets weakened until it means nothing.
+
+        A *compared* feature missing from a served row is the case that must never pass:
+        that is the skew that costs the most, because it reads as a working model right up
+        until deployment.
         """
         for pair in paired:
             for minute, served in pair["live"].items():
-                missing = set(FEATURE_ORDER) - set(served)
+                missing = set(COMPARED) - set(served)
                 assert not missing, f"match {pair['match']['id']} minute {minute}: {missing}"
 
 

@@ -32,6 +32,7 @@ from app.core.logging import get_logger
 from app.db.models.enums import SeriesFormat
 from app.db.models.matches import Match, Series
 from app.db.models.raw import RawMatch
+from app.db.models.reference import League
 from app.db.models.training import MatchPrematch, MatchSnapshot
 from app.features.adapters.stratz import is_parsed, iter_snapshots
 from app.features.game_state import SeriesContext
@@ -75,6 +76,8 @@ class MatchContext:
     is_conditional_game: bool | None = None
     radiant_series_wins: int = 0
     dire_series_wins: int = 0
+    #: From `leagues.is_lan`, and None for a league nobody has mapped yet.
+    is_lan: bool | None = None
 
     def to_series_context(self) -> SeriesContext:
         """Unknowns collapse to the neutral value the feature builder expects.
@@ -90,6 +93,7 @@ class MatchContext:
             is_conditional_game=bool(self.is_conditional_game),
             radiant_series_wins=self.radiant_series_wins,
             dire_series_wins=self.dire_series_wins,
+            format_known=self.series_format is not None,
         )
 
 
@@ -135,8 +139,10 @@ async def contexts_for(session: AsyncSession, match_ids: list[int]) -> dict[int,
                 Match.radiant_team_id,
                 Match.dire_team_id,
                 Series.format,
+                League.is_lan,
             )
             .join(Series, Series.series_id == Match.series_id, isouter=True)
+            .join(League, League.league_id == Match.league_id, isouter=True)
             .where(Match.match_id.in_(match_ids))
         )
     ).all()
@@ -153,6 +159,7 @@ async def contexts_for(session: AsyncSession, match_ids: list[int]) -> dict[int,
         radiant_team_id,
         dire_team_id,
         fmt,
+        is_lan,
     ) in rows:
         position = int(game_in_series or 1)
         tally = earlier.get(int(series_id), {}) if series_id is not None else {}
@@ -172,6 +179,7 @@ async def contexts_for(session: AsyncSession, match_ids: list[int]) -> dict[int,
             is_conditional_game=is_conditional,
             radiant_series_wins=radiant_wins,
             dire_series_wins=dire_wins,
+            is_lan=is_lan,
         )
     return contexts
 
@@ -303,6 +311,7 @@ async def _featurize_batch(
                 series=context.to_series_context(),
                 prematch=prematch_features,
                 prematch_prior=prior,
+                is_lan=context.is_lan,
             ):
                 rows.append(
                     {
