@@ -187,3 +187,48 @@ class TestSeriesQuery:
         assert [r.series_id for r in results] == [12]
         assert results[0].maps == 0
         assert results[0].played_at is None
+
+    async def test_maps_come_back_in_play_order(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The UI links to the first map of a series, so "first" has to mean the one played
+        first rather than whichever id the aggregate happened to see."""
+        session.add_all([League(league_id=LEAGUE, name="Test Cup"), Team(team_id=ALPHA)])
+        await session.flush()
+        session.add(Series(series_id=13, league_id=LEAGUE, team_a_id=ALPHA))
+        await session.flush()
+        session.add_all(
+            [
+                Match(
+                    match_id=700,
+                    league_id=LEAGUE,
+                    series_id=13,
+                    start_time=BASE + timedelta(hours=2),
+                ),
+                Match(match_id=701, league_id=LEAGUE, series_id=13, start_time=BASE),
+                Match(
+                    match_id=702,
+                    league_id=LEAGUE,
+                    series_id=13,
+                    start_time=BASE + timedelta(hours=1),
+                ),
+            ]
+        )
+        await session.commit()
+
+        results = await series_for(session, LEAGUE)
+
+        assert results[0].match_ids == [701, 702, 700]
+
+    async def test_a_series_with_no_maps_has_an_empty_id_list(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The outer join yields a NULL row, which must not become a match id of None."""
+        session.add_all([League(league_id=LEAGUE, name="Test Cup"), Team(team_id=ALPHA)])
+        await session.flush()
+        session.add(Series(series_id=14, league_id=LEAGUE, team_a_id=ALPHA))
+        await session.commit()
+
+        results = await series_for(session, LEAGUE)
+
+        assert results[0].match_ids == []

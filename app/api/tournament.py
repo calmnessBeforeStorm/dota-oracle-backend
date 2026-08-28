@@ -15,6 +15,7 @@ grouped under the stage it belongs to.
 from collections.abc import Sequence
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.matches import Match, Series
@@ -52,6 +53,14 @@ async def series_for(session: AsyncSession, league_id: int) -> list[SeriesResult
                 Series.is_draw,
                 func.min(Match.start_time).label("played_at"),
                 func.count(Match.match_id).label("maps"),
+                # Ordered inside the aggregate: the UI links to the first map, and "first"
+                # has to mean the one that was played first.
+                func.array_remove(
+                    func.array_agg(
+                        aggregate_order_by(Match.match_id, Match.start_time.nulls_last())
+                    ),
+                    None,
+                ).label("match_ids"),
             )
             .join(Match, Match.series_id == Series.series_id, isouter=True)
             .where(Series.league_id == league_id)
@@ -85,6 +94,7 @@ async def series_for(session: AsyncSession, league_id: int) -> list[SeriesResult
             is_draw=bool(row[8]),
             played_at=row[9],
             maps=int(row[10]),
+            match_ids=[int(m) for m in (row[11] or [])],
         )
         for row in rows
     ]

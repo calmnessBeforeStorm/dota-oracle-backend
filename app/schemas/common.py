@@ -200,6 +200,8 @@ class SeriesResult(BaseModel):
     #: When the first map was played. Null for a series whose maps we do not hold.
     played_at: datetime | None = None
     maps: int = 0
+    #: The maps themselves, in play order, so the UI can link into a match card.
+    match_ids: list[int] = []
 
 
 class TournamentParticipant(BaseModel):
