@@ -308,5 +308,5 @@ Docs API: `http://localhost:8100/docs`.
   подставляется фикстурой. Проверять так:
 
   ```bash
-  docker compose exec -e STRATZ_API_TOKEN= -e STEAM_API_KEY= -e OPENDOTA_API_KEY=       api python -m pytest
+  docker compose exec -e STRATZ_API_TOKEN= -e STEAM_API_KEY= -e OPENDOTA_API_KEY= api \n      python -m pytest
   ```
