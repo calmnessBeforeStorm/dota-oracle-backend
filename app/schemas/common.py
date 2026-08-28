@@ -181,11 +181,53 @@ class TournamentSummary(BaseModel):
     status: str = "current"
 
 
+class SeriesResult(BaseModel):
+    """One series on the tournament page (F4).
+
+    `winner_team_id` nullable and `is_draw` explicit, as everywhere: a Bo2 ending 1-1 and a
+    series still being played are different states (spec section 5.5).
+    """
+
+    series_id: int
+    stage_id: int | None = None
+    format: SeriesFormat | None = None
+    team_a: TeamBrief
+    team_b: TeamBrief
+    score_a: int = 0
+    score_b: int = 0
+    winner_team_id: int | None = None
+    is_draw: bool = False
+    #: When the first map was played. Null for a series whose maps we do not hold.
+    played_at: datetime | None = None
+    maps: int = 0
+    #: The maps themselves, in play order, so the UI can link into a match card.
+    match_ids: list[int] = []
+
+
+class TournamentParticipant(BaseModel):
+    """A team's record in one tournament (F4), derived from its series."""
+
+    team: TeamBrief
+    series_won: int = 0
+    series_lost: int = 0
+    series_drawn: int = 0
+    maps_won: int = 0
+    maps_lost: int = 0
+
+
 class TournamentDetail(TournamentSummary):
-    """F4: the tournament page."""
+    """F4: the tournament page.
+
+    No bracket. Our series carry no round and no "winner of this plays winner of that", and
+    Dota playoffs are almost always double elimination, so upper and lower bracket cannot be
+    told apart from dates and results. Drawing one would be a guess presented as a fact; it
+    needs Liquipedia's bracket templates, which is separate work.
+    """
 
     stages: list[TournamentStageInfo] = []  # type: ignore[assignment]
     series_total: int = 0
     series_drawn: int = 0
     #: Series whose stage could not be determined, so their format is still unknown.
     series_without_format: int = 0
+    participants: list[TournamentParticipant] = []
+    results: list[SeriesResult] = []
