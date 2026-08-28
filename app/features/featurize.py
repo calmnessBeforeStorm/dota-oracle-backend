@@ -235,8 +235,14 @@ async def featurize(
 
     while True:
         async with session_factory() as session:
+            # Joined to `matches`, and that join is load-bearing. `match_snapshots.match_id`
+            # is a foreign key, so a payload whose match has not been normalised yet aborts
+            # the whole insert - and payloads arrive between pipeline runs on their own now
+            # that `resolve-outcomes` is on a cron. One out-of-order fetch used to take a
+            # forty-minute rebuild down with it.
             statement = (
                 select(RawMatch.payload)
+                .join(Match, Match.match_id == RawMatch.match_id)
                 .where(RawMatch.source == str(RawSource.STRATZ_MATCH))
                 .order_by(RawMatch.match_id)
                 .offset(offset)

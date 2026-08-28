@@ -178,3 +178,45 @@ class TestRebuild:
                 .all()
             )
         assert len(count) == 1
+
+
+class TestPayloadsAheadOfTheNormalizedLayer:
+    """A detail payload can arrive before its match row exists (spec section 4.2).
+
+    `resolve-outcomes` runs on a cron and fetches payloads between pipeline runs, so by the
+    time `featurize` runs there are usually a few maps holding a payload and no `matches`
+    row. `match_snapshots.match_id` is a foreign key, so one of them used to abort the whole
+    insert - and under `--rebuild` the table has already been emptied by then. Observed on
+    the real database: a forty-minute rebuild taken down by a single map fetched by cron
+    twenty minutes earlier.
+    """
+
+    async def test_a_payload_without_a_match_row_is_skipped_not_fatal(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        normalized = stub(4001)
+        await seed(session, [normalized])
+        # Same shape, but nothing ever normalized this one.
+        await upsert_raw_matches(session, RawSource.STRATZ_MATCH, [stub(4002)])
+        await session.commit()
+
+        report = await featurize(sessionmaker, rebuild=True)
+
+        assert report.matches_used == 1
+        async with sessionmaker() as check:
+            stored = set(
+                (await check.execute(select(MatchSnapshot.match_id).distinct())).scalars().all()
+            )
+        assert stored == {4001}
+
+    async def test_the_rebuild_still_clears_what_it_replaces(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The skip must not turn into a leak: rows for a match that has since lost its
+        payload should not survive a rebuild."""
+        await seed(session, [stub(4001)])
+        await featurize(sessionmaker)
+
+        report = await featurize(sessionmaker, rebuild=True)
+
+        assert report.deleted > 0
