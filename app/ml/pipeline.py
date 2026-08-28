@@ -30,7 +30,13 @@ from app.core.logging import get_logger
 from app.features.live import FEATURE_ORDER, as_vector
 from app.ml.baselines import fit_baselines
 from app.ml.calibration import IdentityCalibrator, PlattCalibrator
-from app.ml.dataset import SnapshotRow, Split, load_snapshots, split_by_time
+from app.ml.dataset import (
+    SnapshotRow,
+    Split,
+    baseline_fit_slice,
+    load_snapshots,
+    split_by_time,
+)
 from app.ml.evaluate import Evaluation, evaluate
 from app.ml.registry import ModelCard, new_version, save_card
 
@@ -178,8 +184,13 @@ async def train(
 
     # Baselines are fitted on train and scored on holdout, exactly like the candidate.
     # Fitting them on holdout would let them peek at the answers the model cannot see.
-    train_features = [row.features for row in split.train]
-    train_labels = [row.radiant_win for row in split.train]
+    #
+    # On a bounded sample of it, though: they are pure-Python gradient descent, and on the
+    # full slice the gate cost twenty times what the model it judges cost to fit. See
+    # `baseline_fit_slice`.
+    fit_rows = baseline_fit_slice(split.train)
+    train_features = [row.features for row in fit_rows]
+    train_labels = [row.radiant_win for row in fit_rows]
     holdout_features = [row.features for row in split.holdout]
     baselines = {
         baseline.name: baseline.predict(holdout_features)

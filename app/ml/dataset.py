@@ -149,3 +149,44 @@ def split_by_time(
     )
     log.info("dataset.split", **split.summary())
     return split
+
+
+#: How many matches the pure-Python baselines are fitted on.
+#:
+#: They are one-, two- and three-parameter models fitted by gradient descent in plain Python,
+#: which costs O(iterations x rows). Measured: at 101605 training rows the gate took about
+#: twenty times longer than the LightGBM fit it exists to judge - and the training set is
+#: still growing by a factor of six as the backfill lands. Three coefficients do not need a
+#: hundred thousand correlated rows.
+#:
+#: The cap is on matches, never on rows: snapshots of one game move together (section 5.1),
+#: so sampling rows would keep the row count while quietly narrowing the variety of games
+#: behind the fit.
+BASELINE_FIT_MATCHES = 600
+
+
+def baseline_fit_slice(
+    rows: Sequence[SnapshotRow], matches: int = BASELINE_FIT_MATCHES
+) -> list[SnapshotRow]:
+    """A cheaper stand-in for the training slice, for fitting the baselines only.
+
+    Spread evenly across the window rather than taken from the front. The training slice is
+    chronological, so a prefix would fit every baseline on the oldest patch in the data and
+    then judge the model on the newest.
+    """
+    if matches < 2:
+        raise ValueError("a fit needs at least two matches")
+
+    order: dict[int, None] = {}
+    for row in rows:
+        order.setdefault(row.match_id, None)
+    if len(order) <= matches:
+        return list(rows)
+
+    ids = list(order)
+    # Spans both ends of the window. A plain `index * len(ids) / matches` stops short of the
+    # newest matches - with a thousand of them and a cap of ten it never reaches past the
+    # nine-hundredth, and the baselines end up fitted on a slightly older game than the model.
+    last = len(ids) - 1
+    keep = {ids[round(index * last / (matches - 1))] for index in range(matches)}
+    return [row for row in rows if row.match_id in keep]

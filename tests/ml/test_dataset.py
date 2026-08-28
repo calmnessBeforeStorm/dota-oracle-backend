@@ -16,7 +16,23 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models.matches import Match
 from app.db.models.training import MatchSnapshot
-from app.ml.dataset import Split, load_snapshots, split_by_time
+from app.ml.dataset import (
+    SnapshotRow,
+    Split,
+    baseline_fit_slice,
+    load_snapshots,
+    split_by_time,
+)
+
+
+def row(match_id: int, minute: int) -> SnapshotRow:
+    return SnapshotRow(
+        match_id=match_id,
+        minute=minute,
+        features={"gold_adv": 0.0, "minute": float(minute)},
+        radiant_win=True,
+        start_time=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=match_id),
+    )
 
 
 async def seed_matches(session: AsyncSession, count: int, snapshots_per_match: int = 5) -> None:
@@ -137,3 +153,45 @@ class TestSplitting:
         assert summary["holdout_matches"] == 20
         assert summary["train_rows"] == 350
         assert "train_window" in summary and "holdout_window" in summary
+
+
+class TestBaselineFitSlice:
+    """Bounding what the pure-Python baselines are fitted on (spec sections 5.1, 7.3).
+
+    Measured: at 101605 training rows the evaluation gate took roughly twenty times longer
+    than the LightGBM fit it exists to judge, because three coefficients were being found by
+    gradient descent over a hundred thousand correlated rows.
+    """
+
+    def test_a_small_slice_is_returned_whole(self) -> None:
+        rows = [row(match_id=m, minute=0) for m in range(10)]
+
+        assert len(baseline_fit_slice(rows, matches=600)) == 10
+
+    def test_a_large_slice_is_capped_by_match(self) -> None:
+        rows = [row(match_id=m, minute=minute) for m in range(1000) for minute in range(5)]
+
+        kept = baseline_fit_slice(rows, matches=100)
+
+        assert len({r.match_id for r in kept}) == 100
+
+    def test_every_row_of_a_kept_match_survives(self) -> None:
+        """Sampling rows would keep the row count while narrowing the variety of games behind
+        the fit - snapshots of one game move together (section 5.1)."""
+        rows = [row(match_id=m, minute=minute) for m in range(1000) for minute in range(5)]
+
+        kept = baseline_fit_slice(rows, matches=100)
+
+        assert len(kept) == 500
+        for match_id in {r.match_id for r in kept}:
+            assert sum(1 for r in kept if r.match_id == match_id) == 5
+
+    def test_the_sample_spans_the_whole_window(self) -> None:
+        """A prefix would fit every baseline on the oldest patch in the data and then judge
+        the model on the newest."""
+        rows = [row(match_id=m, minute=0) for m in range(1000)]
+
+        kept = {r.match_id for r in baseline_fit_slice(rows, matches=10)}
+
+        assert min(kept) < 100
+        assert max(kept) > 900
