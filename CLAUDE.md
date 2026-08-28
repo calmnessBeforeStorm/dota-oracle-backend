@@ -367,17 +367,32 @@ Liquipedia банит по IP: кастомный `User-Agent` с контакт
 
 **Разработка и прод — разные файлы и разные образы.**
 
+**Однократная подготовка.** `requires-python` — строго `>=3.12,<3.13`, а на машине владельца
+системный Python 3.14, где pip просто откажется ставить пакет. Поэтому нужен venv на 3.12;
+интерпретатор ставится рядом с существующим, не вместо него:
+
 ```bash
-cp .env.example .env            # STEAM_API_KEY нужен для live-контура
-docker compose up -d            # postgres + redis + worker. API и SPA — руками:
+winget install --id Python.Python.3.12    # если 3.12 ещё нет: py -0p покажет
+py -3.12 -m venv .venv
+.venv/Scripts/python.exe -m pip install -e ".[dev]"
+cp .env.example .env                       # STEAM_API_KEY нужен для live-контура
+```
 
-# API. Нужен локальный Python 3.12 с установленными зависимостями — на машине владельца
-# стоит 3.14, где asyncpg не собирается, так что venv на 3.12 обязателен:
-#   py -3.12 -m venv .venv && .venv/Scripts/pip install -e ".[dev]"
-uvicorn app.main:app --reload --port 8100
+**Каждый день — три терминала.**
 
+```bash
+# 1. хранилища и воркер
+docker compose up -d
+
+# 2. API
+.venv/Scripts/python.exe -m uvicorn app.main:app --reload --port 8100
+
+# 3. SPA
 cd ../dota-oracle-frontend && npm run dev
-curl localhost:8100/api/health   # порты нестандартные: 8100 / 5442 / 6389
+```
+
+Порты нестандартные: 8100 API, 5273 SPA, 5442 Postgres, 6389 Redis. Дев-сервер SPA
+проксирует `/api` и `/ws` на 8100, так что открывать надо `localhost:5273`.
 
 # Всё, что умеет образ API, кроме обслуживания запросов: тесты, ruff, mypy, alembic, CLI.
 # `run --rm` поднимает контейнер на одну команду и выбрасывает.
