@@ -4,11 +4,30 @@ The query text is asserted field by field on purpose. A field dropped from it do
 fail here - it fails much later, inside the adapter, on some matches and not others.
 """
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from app.ingestion.clients.stratz import MATCH_QUERY, StratzClient
+
+
+@pytest.fixture
+def stratz_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give the client a token so it agrees to exist.
+
+    `StratzClient.__init__` refuses to construct without one, which is right - a backfill
+    that only discovers the missing token on its first request has already wasted the run.
+    But these tests mock the network entirely and CI has no business holding a real
+    credential, so one is injected here.
+
+    Patched at the call site rather than through the environment: `get_settings` is
+    `lru_cache`d, so setting `STRATZ_API_TOKEN` after import changes nothing.
+    """
+    monkeypatch.setattr(
+        "app.ingestion.clients.stratz.get_settings",
+        lambda: SimpleNamespace(stratz_api_token="token-for-tests"),
+    )
 
 
 class FakeQuery:
@@ -22,7 +41,9 @@ class FakeQuery:
         return {"match": {"id": variables["id"], "durationSeconds": 1800}}
 
 
-async def test_match_asks_for_the_match_query(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_match_asks_for_the_match_query(
+    monkeypatch: pytest.MonkeyPatch, stratz_token: None
+) -> None:
     client = StratzClient()
     fake = FakeQuery()
     monkeypatch.setattr(client, "query", fake)
@@ -37,7 +58,7 @@ async def test_match_asks_for_the_match_query(monkeypatch: pytest.MonkeyPatch) -
 
 
 async def test_match_returns_an_empty_mapping_when_stratz_knows_nothing(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, stratz_token: None
 ) -> None:
     """`match(id:)` answers with a null rather than an error for an unknown id."""
     client = StratzClient()
