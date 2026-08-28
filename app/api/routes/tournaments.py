@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.tournament import participants_from, series_for
 from app.db.models.matches import Match, Series
 from app.db.models.reference import League, TournamentStage
 from app.db.session import get_session
@@ -164,6 +165,8 @@ async def tournament_detail(
         )
     ).one()
 
+    results = await series_for(session, league_id)
+
     return TournamentDetail(
         league_id=league.league_id,
         name=league.name,
@@ -179,4 +182,6 @@ async def tournament_detail(
         series_total=series_total,
         series_drawn=drawn,
         series_without_format=undecided,
+        participants=participants_from(results),
+        results=results,
     )
