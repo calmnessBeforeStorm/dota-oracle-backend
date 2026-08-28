@@ -19,6 +19,7 @@ from app.ingestion.normalize import (
 )
 from app.ingestion.repository import upsert_raw_matches
 from app.ingestion.sources import RawSource
+from app.ingestion.workers.normalize_worker import run_normalize
 
 BASE_TIME = 1_780_000_000
 
@@ -644,3 +645,65 @@ class TestADetailPayloadCanCreateTheMatch:
             row = (await check.execute(select(Match).where(Match.match_id == 42))).scalar_one()
         assert row.series_id is None
         assert row.league_id is None
+
+
+class TestTheScheduledPass:
+    """Normalization on a cron (spec section 10).
+
+    It was the one link in the chain nobody had scheduled. The poller predicts, `catch_up`
+    finds finished matches, `resolve_prediction_outcomes` fetches the payload behind an
+    unscored prediction - and there the chain stopped, because reading the outcome out of
+    that payload only ever happened when a person typed `normalize`.
+
+    Invisible in the expensive way: every job reported success, the raw table filled up, and
+    the accuracy dashboard stayed empty for a model that had been serving all day.
+    """
+
+    async def test_it_writes_the_normalized_layer(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await upsert_raw_matches(session, RawSource.OPENDOTA_PRO_MATCHES, [summary(42)])
+        await session.commit()
+
+        written = await run_normalize(sessionmaker)
+
+        assert written == 1
+        async with sessionmaker() as check:
+            assert (
+                await check.execute(select(Match).where(Match.match_id == 42))
+            ).scalar_one_or_none() is not None
+
+    async def test_running_it_twice_changes_nothing(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Which is what makes it safe to schedule at all - invariant 5. It reads raw rows,
+        upserts on natural keys and touches no network."""
+        await upsert_raw_matches(session, RawSource.OPENDOTA_PRO_MATCHES, [summary(42)])
+        await session.commit()
+
+        await run_normalize(sessionmaker)
+        async with sessionmaker() as check:
+            after_first = (
+                await check.execute(select(func.count()).select_from(Match))
+            ).scalar_one()
+
+        await run_normalize(sessionmaker)
+        async with sessionmaker() as check:
+            assert (
+                await check.execute(select(func.count()).select_from(Match))
+            ).scalar_one() == after_first
+
+    async def test_it_carries_an_outcome_from_a_detail_payload(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The whole point of scheduling it: `resolve-outcomes` leaves a STRATZ payload
+        behind, and this is the step that turns it into a `radiant_win` the accuracy
+        dashboard can score against."""
+        await upsert_raw_matches(session, RawSource.STRATZ_MATCH, [STRATZ_PAYLOAD])
+        await session.commit()
+
+        await run_normalize(sessionmaker)
+
+        async with sessionmaker() as check:
+            row = (await check.execute(select(Match).where(Match.match_id == 42))).scalar_one()
+        assert row.radiant_win is True

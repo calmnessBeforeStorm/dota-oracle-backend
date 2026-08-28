@@ -13,6 +13,7 @@ from app.core.logging import configure_logging
 from app.ingestion.workers.backfill import backfill_pro_matches, catch_up_pro_matches
 from app.ingestion.workers.details import backfill_details_hourly, backfill_match_details
 from app.ingestion.workers.live_poller import poll_live_games
+from app.ingestion.workers.normalize_worker import normalize_stored_payloads
 from app.ingestion.workers.outcomes import resolve_prediction_outcomes
 from app.ingestion.workers.sync import sync_liquipedia
 from app.workers.drift import check_calibration_drift
@@ -45,6 +46,7 @@ class WorkerSettings:
         poll_live_games,
         sync_liquipedia,
         resolve_prediction_outcomes,
+        normalize_stored_payloads,
         check_calibration_drift,
     ]
     cron_jobs: ClassVar[list[Any]] = [
@@ -71,6 +73,16 @@ class WorkerSettings:
         # `DETAILS_PER_HOUR`. Never retried: a failed slice is not worth a second helping of
         # somebody else's quota, and the next hour picks up exactly where it stopped.
         cron(backfill_details_hourly, minute=11, max_tries=1),
+        # Six minutes behind the outcome resolver, because it is what finishes that job:
+        # the resolver stores a payload and this is the step that reads the outcome out of
+        # it. Without it the chain ended in the raw table - every job green, the accuracy
+        # dashboard empty, and nothing anywhere saying why.
+        #
+        # The gap is a guess, not a measurement: the resolver's own run time is unbounded
+        # (it fetches one match at a time and its queue is however many predictions went
+        # unscored). Missing the gap costs an hour of latency, not a row - both jobs are
+        # idempotent and the next pass picks up whatever the last one was too early for.
+        cron(normalize_stored_payloads, minute=47, max_tries=1),
         # Phase 7. Once a day rather than hourly: the window is seven days wide, so an
         # hourly verdict would be the same verdict twenty-four times, and an alert that
         # repeats itself all day is one people learn to close.
