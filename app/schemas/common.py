@@ -131,6 +131,13 @@ class MatchDetail(BaseModel):
     series: SeriesBrief
     is_live: bool
     radiant_win: bool | None = None
+    #: Kills on the map, not the series score - that one lives on `series`.
+    radiant_score: int | None = None
+    dire_score: int | None = None
+    #: How far the broadcast trails the data, in seconds. Never hidden: our numbers run ahead
+    #: of what a viewer sees, and saying so is what keeps the card from being a spoiler
+    #: (spec section 7.4).
+    stream_delay_seconds: int = 0
     curve: list[PredictionPoint] = []
     players: list[MatchPlayerBrief] = []
     draft: list[DraftEntry] = []
