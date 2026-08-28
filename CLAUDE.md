@@ -57,6 +57,11 @@ Tier 1 и отдаёт турнирный календарь. Две разны�
 - **Ещё нет:** синергий и контрпиков в драфте (§6.3 предполагает развитие до факторизации),
   моделей фаз 4–5.
 - **Ещё нет:** обученной модели (фаза 4) — отдаётся `BaselinePredictor`.
+- **Петля обратной связи замкнута:** `resolve-outcomes` спрашивает у STRATZ исход именно тех
+  матчей, по которым мы уже отдали прогноз, и `/api/model/metrics` считает по ним калибровку
+  (F6). Ждать, пока до них дойдёт сводочный поток, не работает — замерено 28.08.2026: верх
+  `/proMatches` совпадал с самым свежим матчем в базе и не двигался десять часов, а над ним
+  висело 220 предсказанных матчей.
 
 Критерий выхода из фазы 1 (§11): ≥ 40k про-матчей с игроками, перезапуск не даёт дубликатов.
 
@@ -99,10 +104,11 @@ app/
 │   ├── normalize.py         raw → leagues/teams/series/matches (сеть не трогает)
 │   ├── reference.py         герои и про-игроки из OpenDota (по одному вызову)
 │   ├── cli.py               backfill / normalize / status, запускается руками
-│   └── workers/             backfill, live_poller, sync
+│   └── workers/             backfill, details, outcomes, live_poller, sync
 ├── ml/                      predictor (инференс в процессе API), registry, pipeline
 ├── schemas/                 pydantic-схемы API
 ├── api/
+│   ├── accuracy.py          F6: сверка прогнозов с исходом, калибровка по версиям
 │   ├── card.py              сборка карточки матча: составы, драфт, таймлайн (F2)
 │   └── routes/              health, matches, tournaments, teams, model, ws
 └── workers/settings.py      arq WorkerSettings + cron
@@ -180,7 +186,15 @@ app/
     строк, обновит те, что покрыл, и оставит хвост. Ровно это и случилось — карта, разобранная
     из OpenDota (43 события), а потом из STRATZ (24), показывала каждое позднее событие
     дважды. `normalize._replace_children` сначала удаляет, потом вставляет.
-13. **Неизвестное хранится как NULL, а не как значение по умолчанию.** `series.format` и
+13. **Детальный payload может создать матч, но только заполняя пробелы.** Обычный порядок —
+    сводка, потом детали, и тогда `_ensure_matches` не делает ничего нового. Он нужен, когда
+    сводка опаздывает или не приходит вовсе: без него матч, по которому live-петля уже отдала
+    прогноз, невидим целиком — вместе с исходом, — а дочерние строки нельзя даже вставить,
+    у них FK на `matches`. Правило записи — `coalesce(существующее, новое)` по каждой колонке:
+    сводочный слой владеет этими полями, детальный разбор имеет право только дозаполнить.
+    `league_id` в скелет не пишется (FK на `leagues`, которые населяет сводочный слой),
+    `series_id` — тем более (инвариант 11).
+14. **Неизвестное хранится как NULL, а не как значение по умолчанию.** `series.format` и
     `matches.is_conditional_game` остаются NULL до фазы 2: подстановка `bo3` неотличима от
     знания позже, а `is_conditional_game` идёт прямо в обучающую выборку.
 
@@ -271,6 +285,7 @@ docker compose exec api alembic upgrade head
 docker compose exec api python -m app.ingestion.cli backfill --pages 50   # вглубь истории
 docker compose exec api python -m app.ingestion.cli catch-up             # свежие матчи
 docker compose exec api python -m app.ingestion.cli details --source stratz --limit 700
+docker compose exec api python -m app.ingestion.cli resolve-outcomes  # исходы под прогнозы
 docker compose exec api python -m app.ingestion.cli reference   # герои и имена игроков
 docker compose exec api python -m app.ingestion.cli normalize
 docker compose exec api python -m app.ingestion.cli status
