@@ -24,8 +24,8 @@ from app.ml.registry import list_models
 from app.workers.drift import check_calibration_drift
 
 
-async def cmd_train(rounds: int, notes: str) -> None:
-    result = await train(rounds=rounds, notes=notes)
+async def cmd_train(rounds: int, notes: str, weighted: bool) -> None:
+    result = await train(rounds=rounds, notes=notes, weighted=weighted)
 
     print(f"version:  {result.version}")
     print(f"artifact: {result.booster_path}")
@@ -90,6 +90,12 @@ def main() -> None:
     trainer.add_argument(
         "--notes", default="", help="free text stored on the model card, e.g. what changed"
     )
+    trainer.add_argument(
+        "--no-weights",
+        dest="weighted",
+        action="store_false",
+        help="train without section 5.4 tier weights (they are on by default; see TIER_WEIGHTS)",
+    )
 
     sub.add_parser("models", help="list trained models and whether they passed the gate")
 
@@ -103,7 +109,7 @@ def main() -> None:
     async def run() -> None:
         try:
             if args.command == "train":
-                await cmd_train(args.rounds, args.notes)
+                await cmd_train(args.rounds, args.notes, args.weighted)
             elif args.command == "drift":
                 await cmd_drift()
             else:

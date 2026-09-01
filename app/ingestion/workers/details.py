@@ -206,6 +206,19 @@ async def backfill_match_details(
 #: prediction nobody can score teaches nothing, and it needs a handful of calls against this
 #: job's hundreds. Measured 2026-08-28, an unbounded run was refused after 476 maps - the
 #: whole hour's room, spent by whichever job happened to start first.
+#:
+#: **Corroborated 2026-09-01 and left alone.** A second unbounded run was refused after 557
+#: maps in twenty minutes with `Retry-After: 648s`, against 476 on 2026-08-28. Two independent
+#: measurements of the same thing, and both describe a *burst* ceiling rather than a
+#: sustainable hourly rate - the second run was asking at ~1670 an hour when it was refused,
+#: which says nothing about what could be asked for indefinitely.
+#:
+#: The temptation, with 48.6k maps queued after the summary backfill, is to raise this. The
+#: arithmetic says not to: 300 here plus the resolver's 200 is already 500 an hour, which is
+#: inside the 476-557 band where both refusals happened. Raising it would buy a slightly
+#: longer first slice and a refusal in every hour after it. Raise this only after measuring
+#: the sustained rate - how much can be fetched over several hours without a refusal - which
+#: neither of the two runs above did.
 DETAILS_PER_HOUR = 300
 
 

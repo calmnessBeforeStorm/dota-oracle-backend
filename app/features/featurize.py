@@ -35,15 +35,12 @@ from app.db.models.raw import RawMatch
 from app.db.models.reference import League
 from app.db.models.training import MatchPrematch, MatchSnapshot
 from app.features.adapters.stratz import is_parsed, iter_snapshots
+from app.features.eligibility import ineligible_reason
 from app.features.game_state import SeriesContext
 from app.features.live import build_live_features
 from app.ingestion.sources import RawSource
 
 log = get_logger(__name__)
-
-#: Spec section 5.3: forfeits and disconnect-ridden games are filtered by metadata, never by
-#: outcome. Twelve minutes is the stated floor.
-MIN_DURATION_SECONDS = 12 * 60
 
 
 @dataclass
@@ -286,8 +283,11 @@ async def _featurize_batch(
             report.skip("not parsed")
         elif payload.get("didRadiantWin") is None:
             report.skip("no outcome to label with")
-        elif int(payload.get("durationSeconds") or 0) < MIN_DURATION_SECONDS:
-            report.skip("shorter than 12 minutes")
+        elif (reason := ineligible_reason(payload)) is not None:
+            # Section 5.3, and only on metadata. Never on the outcome: dropping the games that
+            # look like throws produces a model that has never seen a comeback and
+            # overestimates the leader exactly where Tier 1 is most interesting.
+            report.skip(reason)
         else:
             usable.append(payload)
 

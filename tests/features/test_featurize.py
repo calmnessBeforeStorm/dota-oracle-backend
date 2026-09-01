@@ -29,14 +29,21 @@ def stratz_match() -> dict[str, Any]:
 
 
 def stub(match_id: int, **overrides: Any) -> dict[str, Any]:
-    """A payload with the shape featurize inspects and nothing else."""
+    """A payload with the shape featurize inspects and nothing else.
+
+    Ten players and two team ids because section 5.3 is checked before anything else is: a
+    payload that could not have come from a professional match is not a useful stand-in for
+    one, whatever the test is about.
+    """
     return {
         "id": match_id,
         "parsedDateTime": 1787702910,
         "radiantNetworthLeads": [0, 1, 2],
         "didRadiantWin": True,
         "durationSeconds": 1800,
-        "players": [],
+        "radiantTeamId": 111,
+        "direTeamId": 222,
+        "players": [{"leaverStatus": "NONE"} for _ in range(10)],
         "towerDeaths": [],
         **overrides,
     }

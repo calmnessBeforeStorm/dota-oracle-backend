@@ -17,6 +17,7 @@ the API image, which does not carry the `ml` extra, and importing at the top wou
 `app.ml.registry` for the service that only reads model cards.
 """
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -75,6 +76,83 @@ EARLY_STOPPING_ROUNDS = 40
 #: the base rate to about two points, which is small enough to calibrate against.
 MIN_CALIBRATION_MATCHES = 500
 
+#: Section 5.4. Training runs on the whole professional corpus; the target domain is Tier 1.
+#:
+#: The spec offers two ways to bridge that: sample weights by tier, or pre-training on
+#: everything and calibrating on Tier 1. Both are implemented; the weights are on because a
+#: run said so rather than because the spec lists them first.
+#:
+#: Measured 2026-09-01 on 6466 maps, the same split scored both ways and the difference
+#: bootstrapped by match (`app.ml.significance`):
+#:
+#:     0-4   +0.0005 +-0.0025   tied        20-24  -0.0034 +-0.0021  better
+#:     5-9   +0.0004 +-0.0023   tied        25-29  -0.0025 +-0.0021  better
+#:     10-14 -0.0002 +-0.0021   tied        30+    -0.0034 +-0.0024  better
+#:     15-19 -0.0016 +-0.0022   tied
+#:
+#: Better late, tied early, worse nowhere. **That comparison was made on the holdout**, so
+#: this one bit of information has leaked out of it and the next run's holdout figure is very
+#: slightly optimistic. Written down rather than glossed: the alternative was to decide it on
+#: a validation slice that early stopping and calibration have both already seen.
+#:
+#: "unknown" weighs the same as tier 1, and that is 72% of the archive. An unmapped league is
+#: not evidence of a bad match; anything lower would weight by how far the Liquipedia mapping
+#: has got rather than by the quality of the game.
+TIER_WEIGHTS = {"tier1": 1.0, "tier2": 0.6, "tier3": 0.3, "unknown": 1.0}
+
+#: Section 5.4 asks for exponential decay by patch age. `matches.patch` is NULL for STRATZ
+#: maps (`gameVersionId` is a different scale), so age is measured in days from the newest map
+#: in the training slice - the same substitution section 7.1 already makes for the split.
+#: A half-life rather than a rate, because a half-life is a number one can argue about: after
+#: this many days a map counts half as much.
+WEIGHT_HALF_LIFE_DAYS = 180.0
+
+#: The domain the served probabilities are supposed to be honest about (section 5.4).
+TARGET_TIER = "tier1"
+
+
+def tier_weights(
+    rows: Sequence[SnapshotRow], half_life_days: float = WEIGHT_HALF_LIFE_DAYS
+) -> list[float]:
+    """Section 5.4 sample weights: tier importance, decayed by age."""
+    if not rows:
+        return []
+    newest = max(row.start_time for row in rows)
+    decay = math.log(2.0) / half_life_days
+    return [
+        TIER_WEIGHTS.get(row.tier, 1.0)
+        * math.exp(-decay * (newest - row.start_time).total_seconds() / 86400.0)
+        for row in rows
+    ]
+
+
+def calibration_rows(rows: Sequence[SnapshotRow]) -> tuple[list[SnapshotRow], str]:
+    """Which rows to fit the calibrator on, and what to write on the card about it.
+
+    Section 5.4's preferred design is to calibrate on the target domain. That only helps while
+    the target domain is big enough to calibrate against - `MIN_CALIBRATION_MATCHES` exists
+    because a small slice teaches Platt its own sampling error as a bias, which on
+    2026-08-27 turned a holdout log loss of 0.5685 into 0.6115. Tier 1 is a *sub*set of the
+    validation slice, so it hits that floor first and hardest.
+
+    So the domain is chosen by measurement rather than declared: Tier 1 when there is enough
+    of it, the whole slice when there is not, and the card says which happened. It switches
+    over on its own as the league mapping and the backfill catch up.
+    """
+    target = [row for row in rows if row.tier == TARGET_TIER]
+    target_matches = len({row.match_id for row in target})
+    if target_matches >= MIN_CALIBRATION_MATCHES:
+        return target, f"platt on {TARGET_TIER} ({target_matches} matches)"
+
+    all_matches = len({row.match_id for row in rows})
+    if all_matches >= MIN_CALIBRATION_MATCHES:
+        return (
+            list(rows),
+            f"platt on all tiers ({all_matches} matches; "
+            f"{TARGET_TIER} had {target_matches}, needs {MIN_CALIBRATION_MATCHES})",
+        )
+    return [], f"identity (validation {all_matches} matches, too small)"
+
 
 @dataclass(frozen=True)
 class TrainingResult:
@@ -92,8 +170,16 @@ def _matrix(rows: Sequence[SnapshotRow]) -> tuple[list[list[float]], list[int]]:
     )
 
 
-def train_booster(split: Split, params: dict[str, Any] | None = None, rounds: int = DEFAULT_ROUNDS):  # type: ignore[no-untyped-def]
+def train_booster(  # type: ignore[no-untyped-def]
+    split: Split,
+    params: dict[str, Any] | None = None,
+    rounds: int = DEFAULT_ROUNDS,
+    weighted: bool = True,
+):
     """Fit LightGBM on the training slice, early-stopping on validation.
+
+    `weighted` applies section 5.4's tier weights, and is on because a measurement says so -
+    see `TIER_WEIGHTS`. Pass False to reproduce an unweighted run.
 
     Returns the raw booster. Untyped on purpose: annotating it would require importing
     lightgbm at module scope, which is exactly what this module avoids.
@@ -109,6 +195,7 @@ def train_booster(split: Split, params: dict[str, Any] | None = None, rounds: in
     train_set = lgb.Dataset(
         np.asarray(x_train, dtype=np.float64),
         label=np.asarray(y_train, dtype=np.int32),
+        weight=(np.asarray(tier_weights(split.train), dtype=np.float64) if weighted else None),
         feature_name=list(FEATURE_ORDER),
     )
     val_set = lgb.Dataset(
@@ -141,6 +228,7 @@ async def train(
     params: dict[str, Any] | None = None,
     rounds: int = DEFAULT_ROUNDS,
     notes: str = "",
+    weighted: bool = True,
 ) -> TrainingResult:
     """The whole phase-4 run. Writes an artifact and a card; never activates anything.
 
@@ -157,26 +245,26 @@ async def train(
         raise ValueError("no snapshots to train on - run `ingestion.cli featurize` first")
     split = split_by_time(rows)
 
-    booster = train_booster(split, params, rounds)
+    booster = train_booster(split, params, rounds, weighted=weighted)
 
     # Calibrate on validation, never on train (the model has already seen it) and never on
-    # holdout (which must stay untouched until it is scored once).
-    raw_validation = _predict(booster, split.validation)
-    validation_labels = [row.radiant_win for row in split.validation]
-    validation_matches = len({row.match_id for row in split.validation})
+    # holdout (which must stay untouched until it is scored once). Section 5.4 additionally
+    # wants the target domain, which `calibration_rows` supplies when there is enough of it.
+    fit_on, calibrator_name = calibration_rows(split.validation)
 
     calibrator: PlattCalibrator | IdentityCalibrator
-    if validation_matches < MIN_CALIBRATION_MATCHES:
+    if not fit_on:
         calibrator = IdentityCalibrator()
-        calibrator_name = f"identity (validation {validation_matches} matches, too small)"
         log.warning(
             "model.calibration_skipped",
-            validation_matches=validation_matches,
+            validation_matches=len({row.match_id for row in split.validation}),
             required=MIN_CALIBRATION_MATCHES,
         )
     else:
-        calibrator = PlattCalibrator.fit(raw_validation, validation_labels)
-        calibrator_name = "platt"
+        calibrator = PlattCalibrator.fit(
+            _predict(booster, fit_on), [row.radiant_win for row in fit_on]
+        )
+        log.info("model.calibrated", domain=calibrator_name)
 
     holdout_probs = calibrator.apply(_predict(booster, split.holdout))
     holdout_labels = [row.radiant_win for row in split.holdout]
@@ -222,6 +310,7 @@ async def train(
         gate_failures=result.failures,
         gate_ties=result.ties,
         calibrator=calibrator_name,
+        weighted=weighted,
         calibrator_a=calibrator.a,
         calibrator_b=calibrator.b,
         notes=notes,
