@@ -1,7 +1,6 @@
 """structlog JSON logging (spec section 9.5)."""
 
 import logging
-from collections.abc import Mapping
 
 import structlog
 
@@ -23,15 +22,17 @@ class RedactingFilter(logging.Filter):
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if isinstance(record.msg, str):
-            record.msg = redact(record.msg)
-        if isinstance(record.args, tuple):
-            record.args = tuple(redact(a) if isinstance(a, str) else a for a in record.args)
-        elif isinstance(record.args, Mapping):
-            # `logging` unwraps a lone dict argument into `args`, for `%(name)s` formatting.
-            record.args = {
-                k: redact(v) if isinstance(v, str) else v for k, v in record.args.items()
-            }
+        # Render first, then redact, then keep the rendered text. Scrubbing `msg` and each
+        # of `args` in place looks equivalent and is not: httpx logs
+        # `'HTTP Request: %s %s "%s %d %s"'` and passes `request.url`, which is an
+        # `httpx.URL` and not a `str`, so a per-argument type check walks straight past the
+        # one argument that carries the key. Whatever a secret is wrapped in, it is a string
+        # by the time it reaches `getMessage`.
+        message = record.getMessage()
+        scrubbed = redact(message)
+        if scrubbed != message:
+            record.msg = scrubbed
+            record.args = None
         return True
 
 

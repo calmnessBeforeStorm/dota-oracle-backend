@@ -94,6 +94,29 @@ def test_filter_scrubs_lazy_formatting_arguments() -> None:
     assert "api_key=***" in record.getMessage()
 
 
+def test_filter_scrubs_an_argument_that_is_not_a_string() -> None:
+    """The shape httpx actually logs, and the one a per-argument type check misses.
+
+    `logger.info('HTTP Request: %s %s "%s %d %s"', request.method, request.url, ...)` hands
+    over an `httpx.URL`, not a `str`. The first version of this filter checked
+    `isinstance(arg, str)` and walked past the only argument carrying the key - it passed
+    its own tests and kept leaking on the live worker.
+    """
+    record = _record(
+        'HTTP Request: %s %s "%s %d %s"',
+        "GET",
+        httpx.URL(f"https://api.steampowered.com/v1/?key={STEAM_KEY}"),
+        "HTTP/1.1",
+        200,
+        "OK",
+    )
+    RedactingFilter().filter(record)
+
+    assert STEAM_KEY not in record.getMessage()
+    assert "key=***" in record.getMessage()
+    assert "200" in record.getMessage()
+
+
 def test_filter_leaves_records_without_credentials_alone() -> None:
     record = _record("live_poll.tick games=%d", 11)
     RedactingFilter().filter(record)
