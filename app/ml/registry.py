@@ -44,6 +44,9 @@ class ModelCard:
     baseline_log_loss_by_minute: dict[str, dict[str, float]]
     #: Empty means the model beat every baseline in every bucket and may be served.
     gate_failures: list[str] = field(default_factory=list)
+    #: Comparisons this holdout could not decide either way. Not failures - but a gate passed
+    #: on ties is a different thing from one passed on wins, and the card has to say which.
+    gate_ties: list[str] = field(default_factory=list)
     calibrator: str = "platt"
     #: The fitted calibration, `sigmoid(a * logit(p_raw) + b)`, so the serving path can apply
     #: the same transform the evaluation did. Recording only the *name* was not enough and
@@ -78,6 +81,7 @@ class ModelCard:
         payload["feature_order"] = tuple(payload["feature_order"])
         # Cards written before the coefficients were stored describe the identity transform,
         # which is what the serving path did with them anyway.
+        payload.setdefault("gate_ties", [])
         payload.setdefault("calibrator_a", 1.0)
         payload.setdefault("calibrator_b", 0.0)
         return cls(**payload)
