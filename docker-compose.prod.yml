@@ -79,6 +79,18 @@ services:
       redis:
         condition: service_healthy
     command: arq app.workers.settings.WorkerSettings
+    # Not the image's healthcheck. That one curls the API's /api/health, which this process
+    # does not serve, so the container reported `unhealthy` from the second it started and
+    # kept reporting it - a red light that is always red tells you nothing and hides the
+    # real one. arq keeps its own liveness record in Redis with a TTL of
+    # `health_check_interval + 1`, so `--check` fails within a minute of the event loop
+    # dying and passes only while it is actually turning.
+    healthcheck:
+      test: ["CMD", "arq", "app.workers.settings.WorkerSettings", "--check"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
     restart: unless-stopped
 
 volumes:

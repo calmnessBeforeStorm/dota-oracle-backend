@@ -3,12 +3,21 @@
 httpx puts the full request URL into HTTPStatusError, and every external source here takes
 its key as a query parameter, so an upstream 400 would otherwise ship the Steam key to
 structlog and Sentry.
+
+It also logs the URL on its own account, at INFO, on every single request - which scrubbing
+our own messages does nothing about. That one shipped the Steam key into
+`docker compose logs worker` twice a minute for as long as the poller has existed, so the
+filter that closes it is tested here alongside the function it reuses.
 """
+
+import logging
 
 import httpx
 import pytest
 
-from app.ingestion.clients.base import raise_for_status, redact
+from app.core.logging import RedactingFilter, configure_logging
+from app.core.redaction import redact
+from app.ingestion.clients.base import raise_for_status
 
 STEAM_KEY = "D0495A1B2C3D4E5F60718293A4B5C6D7"
 
@@ -57,3 +66,73 @@ def test_raise_for_status_scrubs_the_message() -> None:
 def test_raise_for_status_passes_success_through() -> None:
     request = httpx.Request("GET", "https://api.steampowered.com/v1/?key=x")
     raise_for_status(httpx.Response(200, request=request))
+
+
+def _record(msg: str, *args: object) -> logging.LogRecord:
+    return logging.LogRecord("httpx", logging.INFO, __file__, 1, msg, args or None, None)
+
+
+def test_filter_scrubs_a_message_written_by_someone_else() -> None:
+    """The httpx line verbatim: nothing of ours builds it, so nothing of ours redacted it."""
+    record = _record(
+        f'HTTP Request: GET https://api.steampowered.com/v1/?key={STEAM_KEY} "HTTP/1.1 200 OK"'
+    )
+    RedactingFilter().filter(record)
+
+    assert STEAM_KEY not in record.getMessage()
+    assert "key=***" in record.getMessage()
+    # Still has to say what happened, or the redaction has cost us the log line.
+    assert "200 OK" in record.getMessage()
+
+
+def test_filter_scrubs_lazy_formatting_arguments() -> None:
+    """A record whose secret is in `args` is not a message yet, and is the common shape."""
+    record = _record("HTTP Request: %s", f"GET https://x/?api_key={STEAM_KEY}")
+    RedactingFilter().filter(record)
+
+    assert STEAM_KEY not in record.getMessage()
+    assert "api_key=***" in record.getMessage()
+
+
+def test_filter_scrubs_an_argument_that_is_not_a_string() -> None:
+    """The shape httpx actually logs, and the one a per-argument type check misses.
+
+    `logger.info('HTTP Request: %s %s "%s %d %s"', request.method, request.url, ...)` hands
+    over an `httpx.URL`, not a `str`. The first version of this filter checked
+    `isinstance(arg, str)` and walked past the only argument carrying the key - it passed
+    its own tests and kept leaking on the live worker.
+    """
+    record = _record(
+        'HTTP Request: %s %s "%s %d %s"',
+        "GET",
+        httpx.URL(f"https://api.steampowered.com/v1/?key={STEAM_KEY}"),
+        "HTTP/1.1",
+        200,
+        "OK",
+    )
+    RedactingFilter().filter(record)
+
+    assert STEAM_KEY not in record.getMessage()
+    assert "key=***" in record.getMessage()
+    assert "200" in record.getMessage()
+
+
+def test_filter_leaves_records_without_credentials_alone() -> None:
+    record = _record("live_poll.tick games=%d", 11)
+    RedactingFilter().filter(record)
+    assert record.getMessage() == "live_poll.tick games=11"
+
+
+def test_configure_logging_installs_the_filter_once() -> None:
+    """Called on every worker and API start-up; it must not stack filters per call."""
+    configure_logging("INFO")
+    configure_logging("INFO")
+
+    for handler in logging.getLogger().handlers:
+        installed = [f for f in handler.filters if isinstance(f, RedactingFilter)]
+        assert len(installed) <= 1
+    assert any(
+        isinstance(f, RedactingFilter)
+        for handler in logging.getLogger().handlers
+        for f in handler.filters
+    )

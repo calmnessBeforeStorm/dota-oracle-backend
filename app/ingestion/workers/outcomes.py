@@ -87,7 +87,17 @@ async def resolve_outcomes(
     return report
 
 
-async def resolve_prediction_outcomes(ctx: dict[str, Any], limit: int = 200) -> int:
+#: Ceiling on one scheduled run, and the number its cron timeout is sized from.
+#:
+#: Named rather than left as a default argument because the schedule has to know it. At the
+#: STRATZ throttle a full run is 400 seconds, which is past arq's default job timeout of 300
+#: - and the queue is only ever full after an outage, so the job would have been killed
+#: exactly on the mornings it mattered. Measured 2026-09-01: a queue of 145 took 288s and one
+#: of 115 took 228s, both a hair under the cliff nobody knew was there.
+OUTCOMES_PER_RUN = 200
+
+
+async def resolve_prediction_outcomes(ctx: dict[str, Any], limit: int = OUTCOMES_PER_RUN) -> int:
     """arq entry point. Returns payloads fetched."""
     async with StratzClient() as client:
         report = await resolve_outcomes(client, get_session_factory(), limit=limit)

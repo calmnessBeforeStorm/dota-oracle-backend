@@ -209,6 +209,28 @@ async def backfill_match_details(
 DETAILS_PER_HOUR = 300
 
 
+#: Head-room over the throttle, for a slow tail rather than for a different rate.
+STRATZ_TIMEOUT_MARGIN = 1.5
+
+
+def stratz_slice_timeout(maps: int) -> float:
+    """Seconds a bounded STRATZ run needs, derived from the client's own throttle.
+
+    A slice costs `min_interval` a map and essentially nothing else - the request is noise
+    next to a two-second wait. Measured 2026-09-01 on the live worker: rows landed at exactly
+    30 a minute for five minutes straight, which is the throttle, not a coincidence.
+
+    This exists because arq's default job timeout is 300 seconds and `DETAILS_PER_HOUR` maps
+    need 600. Nothing reported that. The cron fetched 150 maps, was killed at 299.98s and
+    logged a bare `TimeoutError`, every hour since the schedule was added - so the backfill
+    ran at exactly half its stated rate and the missing half looked like an upstream problem.
+    The timeout is derived rather than written down because the two numbers have to move
+    together: a literal would go stale the first time somebody tuned the budget, and it would
+    go stale silently, which is how this was missed the first time.
+    """
+    return maps * StratzClient.min_interval * STRATZ_TIMEOUT_MARGIN
+
+
 async def backfill_details_hourly(ctx: dict[str, Any]) -> int:
     """arq cron entry point: one bounded slice of the history backfill.
 
