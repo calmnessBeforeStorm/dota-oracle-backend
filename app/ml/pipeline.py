@@ -310,6 +310,7 @@ async def train(
         gate_failures=result.failures,
         gate_ties=result.ties,
         calibrator=calibrator_name,
+        weighted=weighted,
         calibrator_a=calibrator.a,
         calibrator_b=calibrator.b,
         notes=notes,

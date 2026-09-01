@@ -48,6 +48,10 @@ class ModelCard:
     #: on ties is a different thing from one passed on wins, and the card has to say which.
     gate_ties: list[str] = field(default_factory=list)
     calibrator: str = "platt"
+    #: Whether section 5.4 tier weights were applied while fitting. Two runs that differ only
+    #: in this produce cards that are otherwise identical, so without it the record cannot
+    #: answer the one question a card exists to answer.
+    weighted: bool = False
     #: The fitted calibration, `sigmoid(a * logit(p_raw) + b)`, so the serving path can apply
     #: the same transform the evaluation did. Recording only the *name* was not enough and
     #: was not obviously not enough: the card said "platt", the reported metrics were
@@ -82,6 +86,7 @@ class ModelCard:
         # Cards written before the coefficients were stored describe the identity transform,
         # which is what the serving path did with them anyway.
         payload.setdefault("gate_ties", [])
+        payload.setdefault("weighted", False)
         payload.setdefault("calibrator_a", 1.0)
         payload.setdefault("calibrator_b", 0.0)
         return cls(**payload)
