@@ -112,3 +112,14 @@ class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
     max_jobs = 10
+    #: How often the worker stamps a liveness record into Redis, and therefore how stale that
+    #: record is allowed to get: arq gives the key a TTL of this plus one second, and
+    #: `arq ... --check` passes only while the key is alive. The default is an hour, which
+    #: would mean an hour of a dead worker looking fine.
+    #:
+    #: Something had to answer the healthcheck, because what was answering it was the API
+    #: image's - `curl localhost:8000/api/health`, inherited from the Dockerfile by a process
+    #: that serves no HTTP at all. It failed every 30 seconds from the moment the container
+    #: started, so `unhealthy` on this container has never carried information; a light that
+    #: is always red is the same as no light, except that it hides the real one.
+    health_check_interval = 30

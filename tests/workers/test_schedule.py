@@ -77,3 +77,13 @@ def test_every_stratz_job_declares_a_timeout() -> None:
     """Anything that spends the STRATZ throttle outlives arq's default. New ones too."""
     for coroutine in (backfill_details_hourly, resolve_prediction_outcomes):
         assert _job(coroutine).timeout_s is not None
+
+
+def test_liveness_record_expires_fast_enough_to_mean_something() -> None:
+    """arq's key lives `health_check_interval + 1` seconds and the container polls every 30.
+
+    The default is an hour, which would let a dead worker keep passing its healthcheck for
+    an hour. The previous check was the API image's `curl localhost:8000` inherited by a
+    process that serves no HTTP - it failed always, which is the same amount of information.
+    """
+    assert WorkerSettings.health_check_interval <= 60
