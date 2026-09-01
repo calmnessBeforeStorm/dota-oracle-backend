@@ -91,9 +91,10 @@ def main() -> None:
         "--notes", default="", help="free text stored on the model card, e.g. what changed"
     )
     trainer.add_argument(
-        "--weighted",
-        action="store_true",
-        help="apply section 5.4 tier weights, decayed by age (default: off, see the card)",
+        "--no-weights",
+        dest="weighted",
+        action="store_false",
+        help="train without section 5.4 tier weights (they are on by default; see TIER_WEIGHTS)",
     )
 
     sub.add_parser("models", help="list trained models and whether they passed the gate")

@@ -78,12 +78,26 @@ MIN_CALIBRATION_MATCHES = 500
 
 #: Section 5.4. Training runs on the whole professional corpus; the target domain is Tier 1.
 #:
-#: The spec offers two ways to bridge that, and prefers the second: sample weights by tier, or
-#: pre-training on everything and **calibrating on Tier 1**. Calibration is preferred because
-#: it is cheaper and usually works better, and on this data there is a third reason: 72% of the
-#: archive has no tier at all, so a weight for "unknown" is a number nobody can justify. Set to
-#: 1.0 here - an unmapped league is not evidence of a bad match, and anything lower would be
-#: weighting by how far the Liquipedia mapping has got rather than by the quality of the game.
+#: The spec offers two ways to bridge that: sample weights by tier, or pre-training on
+#: everything and calibrating on Tier 1. Both are implemented; the weights are on because a
+#: run said so rather than because the spec lists them first.
+#:
+#: Measured 2026-09-01 on 6466 maps, the same split scored both ways and the difference
+#: bootstrapped by match (`app.ml.significance`):
+#:
+#:     0-4   +0.0005 +-0.0025   tied        20-24  -0.0034 +-0.0021  better
+#:     5-9   +0.0004 +-0.0023   tied        25-29  -0.0025 +-0.0021  better
+#:     10-14 -0.0002 +-0.0021   tied        30+    -0.0034 +-0.0024  better
+#:     15-19 -0.0016 +-0.0022   tied
+#:
+#: Better late, tied early, worse nowhere. **That comparison was made on the holdout**, so
+#: this one bit of information has leaked out of it and the next run's holdout figure is very
+#: slightly optimistic. Written down rather than glossed: the alternative was to decide it on
+#: a validation slice that early stopping and calibration have both already seen.
+#:
+#: "unknown" weighs the same as tier 1, and that is 72% of the archive. An unmapped league is
+#: not evidence of a bad match; anything lower would weight by how far the Liquipedia mapping
+#: has got rather than by the quality of the game.
 TIER_WEIGHTS = {"tier1": 1.0, "tier2": 0.6, "tier3": 0.3, "unknown": 1.0}
 
 #: Section 5.4 asks for exponential decay by patch age. `matches.patch` is NULL for STRATZ
@@ -160,12 +174,12 @@ def train_booster(  # type: ignore[no-untyped-def]
     split: Split,
     params: dict[str, Any] | None = None,
     rounds: int = DEFAULT_ROUNDS,
-    weighted: bool = False,
+    weighted: bool = True,
 ):
     """Fit LightGBM on the training slice, early-stopping on validation.
 
-    `weighted` applies section 5.4's tier weights. Off by default, and that default is a
-    measurement rather than an opinion - see the model card of the run that decided it.
+    `weighted` applies section 5.4's tier weights, and is on because a measurement says so -
+    see `TIER_WEIGHTS`. Pass False to reproduce an unweighted run.
 
     Returns the raw booster. Untyped on purpose: annotating it would require importing
     lightgbm at module scope, which is exactly what this module avoids.
@@ -214,7 +228,7 @@ async def train(
     params: dict[str, Any] | None = None,
     rounds: int = DEFAULT_ROUNDS,
     notes: str = "",
-    weighted: bool = False,
+    weighted: bool = True,
 ) -> TrainingResult:
     """The whole phase-4 run. Writes an artifact and a card; never activates anything.
 

@@ -21,6 +21,7 @@ from app.ingestion.workers.details import (
     run_details_backfill,
     select_matches_missing_details,
 )
+from app.ingestion.workers.outcomes import OUTCOMES_PER_RUN
 from tests.ingestion.test_normalize import summary
 
 
@@ -497,6 +498,13 @@ class TestTheHourlySlice:
         assert asked["source"] == "stratz"
 
     def test_the_bound_leaves_room_for_the_outcome_resolver(self) -> None:
-        """Measured 2026-08-28: an unbounded run was refused after 476 maps, which is the
-        whole hour's room spent by whichever job started first."""
+        """Measured twice: an unbounded run was refused after 476 maps on 2026-08-28 and after
+        557 on 2026-09-01. Both are burst ceilings, and the resolver's 200 comes out of the
+        same allowance - so this budget plus that one has to stay under the lower of them.
+
+        This test earned its keep on 2026-09-01: with 48.6k maps queued the budget was raised
+        to 500, which would have put the pair at 700 an hour and bought a refusal in every hour
+        after the first. Raise it only after somebody measures the *sustained* rate, which
+        neither refusal did."""
         assert DETAILS_PER_HOUR < 476
+        assert DETAILS_PER_HOUR + OUTCOMES_PER_RUN <= 500

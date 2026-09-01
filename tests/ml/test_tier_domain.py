@@ -56,6 +56,16 @@ class TestWeights:
     def test_no_rows_no_weights(self) -> None:
         assert tier_weights([]) == []
 
+    def test_weighting_is_on_by_default(self) -> None:
+        """Measured, not assumed: weighted beat unweighted in the three late buckets and tied
+        in the four early ones, on the same split with the difference bootstrapped by match."""
+        import inspect
+
+        from app.ml.pipeline import train, train_booster
+
+        assert inspect.signature(train_booster).parameters["weighted"].default is True
+        assert inspect.signature(train).parameters["weighted"].default is True
+
 
 class TestCalibrationDomain:
     def test_tier_one_is_used_when_there_is_enough_of_it(self) -> None:
