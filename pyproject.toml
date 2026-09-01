@@ -21,14 +21,23 @@ dependencies = [
     # Player ratings with uncertainty (spec section 6.2). Small, pure Python; the sigma is
     # a feature, which is why Elo is not enough.
     "trueskill>=0.4.5",
+    # Inference, not training. This was in the `ml` extra on the reasoning that a request
+    # server has no business carrying a training stack - true of scikit-learn and optuna, and
+    # wrong about the booster itself: loading a trained model *is* the serving path. With it
+    # only in the extra, no image that answers a request could read the artifact, so
+    # ACTIVE_MODEL_VERSION resolved to a load failure and the process fell back to the
+    # baseline. Measured 2026-09-01 on the live worker: `model.load_failed: No module named
+    # 'lightgbm'` - the promotion path had never been run end to end.
+    "lightgbm>=4.5",
 ]
 
 [project.optional-dependencies]
+# Training only. LightGBM is deliberately absent: it moved to the runtime dependencies,
+# because serving a trained model needs it and serving is not training.
 ml = [
     "polars>=1.17",
     "numpy>=2.1",
     "scikit-learn>=1.6",
-    "lightgbm>=4.5",
     "optuna>=4.1",
     "mlflow>=2.19",
 ]

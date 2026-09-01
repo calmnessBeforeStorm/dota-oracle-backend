@@ -121,7 +121,7 @@ class LightGBMPredictor:
     """
 
     def __init__(self, model_path: Path, version: str, calibrator: PlattCalibrator) -> None:
-        import lightgbm as lgb  # imported lazily: the API image does not ship the ml extra
+        import lightgbm as lgb  # lazy: nothing else in the serving path needs it at import
 
         self.version = version
         self._booster = lgb.Booster(model_file=str(model_path))

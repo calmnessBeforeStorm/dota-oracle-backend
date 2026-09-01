@@ -50,6 +50,10 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       ENV: production
+    volumes:
+      # Trained boosters are not in the image - they are produced by a run somebody watches,
+      # not by a build - so both services that answer with a model mount them from the host.
+      - ./models:/app/models:ro
     ports:
       - "${WEB_PORT:-8080}:80"
     depends_on:
@@ -78,6 +82,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - ./models:/app/models:ro
     command: arq app.workers.settings.WorkerSettings
     # Not the image's healthcheck. That one curls the API's /api/health, which this process
     # does not serve, so the container reported `unhealthy` from the second it started and
