@@ -40,6 +40,7 @@ from app.ingestion.stages import link_series_to_stages
 from app.ingestion.workers.backfill import catch_up, run_backfill
 from app.ingestion.workers.details import (
     DETAIL_SOURCES,
+    DETAILS_PER_HOUR,
     count_missing_details,
     run_details_backfill,
 )
@@ -53,10 +54,34 @@ PAGE_SIZE_HINT = 100
 
 #: Measured per source, not taken from the documented rate limit. OpenDota takes ~3.5s to
 #: build a full match payload, so its throughput is bound by response time rather than by the
-#: 60 req/min allowance: 150 maps took 9m04s, about 17 a minute - and the daily allowance
-#: stops the run long before the day is out. STRATZ is bound by its hourly allowance instead,
-#: ~2000 requests an hour, which is what a long run converges to.
+#: 60 req/min allowance: 150 maps took 9m04s, about 17 a minute. STRATZ is bound by its
+#: throttle, one request every two seconds, or 33 a minute.
+#:
+#: **This is the burst rate, and quoting it as an estimate is a lie.** Neither source lets a
+#: run go on at it: OpenDota refused one after 685 maps in a day, and STRATZ refused a 1200-map
+#: run after 557 in twenty minutes with `Retry-After: 648s` (measured 2026-09-01). Used as an
+#: ETA it said 11.2 hours where the honest answer was six times that - and a plan was built on
+#: it. Kept only for describing how fast a single slice moves.
 DETAIL_FETCH_PER_MINUTE = {"opendota": 16.5, "stratz": 33.0}
+
+#: What the backfill actually sustains: a quota per hour, not a throttle per minute. This is
+#: what an ETA has to be built on.
+#:
+#: STRATZ is the hourly budget the cron is allowed to spend (`DETAILS_PER_HOUR`), which is set
+#: below the measured ceiling of roughly 550-650 maps an hour because the outcome resolver
+#: shares it. OpenDota has no useful hourly figure at all - what stops it is the daily
+#: allowance, ~685 maps, so its hourly rate is that spread across the day.
+DETAIL_MAPS_PER_HOUR = {"opendota": 685.0 / 24.0, "stratz": float(DETAILS_PER_HOUR)}
+
+
+def sustained_eta_hours(remaining: int, source: str) -> float:
+    """Hours of *worker uptime* needed to fetch `remaining` maps.
+
+    Uptime, not wall clock, and the distinction is not pedantry: over the four days to
+    2026-09-01 the worker was up for 2.4 hours of them, and an estimate in calendar days
+    would have been wrong by a factor of forty.
+    """
+    return remaining / DETAIL_MAPS_PER_HOUR[source]
 
 
 async def cmd_backfill(pages: int, restart: bool) -> None:
@@ -121,8 +146,10 @@ async def cmd_details(limit: int, oldest_first: bool, source: str) -> None:
     print(f"stopped:   {report.stopped_because}")
     print(f"remaining: {report.remaining}")
     if report.remaining:
-        rate = DETAIL_FETCH_PER_MINUTE[source]
-        print(f"           (~{report.remaining / rate / 60:.1f} h at ~{rate} maps/min)")
+        hours = sustained_eta_hours(report.remaining, source)
+        rate = DETAIL_MAPS_PER_HOUR[source]
+        print(f"           (~{hours:.0f} h of worker uptime at ~{rate:.0f} maps/h)")
+        print("            quota-bound, not throttle-bound; calendar time will be longer")
 
 
 async def cmd_reference() -> None:
