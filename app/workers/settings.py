@@ -11,10 +11,15 @@ from arq.cron import cron
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.ingestion.workers.backfill import backfill_pro_matches, catch_up_pro_matches
-from app.ingestion.workers.details import backfill_details_hourly, backfill_match_details
+from app.ingestion.workers.details import (
+    DETAILS_PER_HOUR,
+    backfill_details_hourly,
+    backfill_match_details,
+    stratz_slice_timeout,
+)
 from app.ingestion.workers.live_poller import poll_live_games
 from app.ingestion.workers.normalize_worker import normalize_stored_payloads
-from app.ingestion.workers.outcomes import resolve_prediction_outcomes
+from app.ingestion.workers.outcomes import OUTCOMES_PER_RUN, resolve_prediction_outcomes
 from app.ingestion.workers.sync import sync_liquipedia
 from app.workers.drift import check_calibration_drift
 
@@ -64,7 +69,12 @@ class WorkerSettings:
         # feed reaches them eventually; "eventually" is not a property the accuracy
         # dashboard or the drift alert can be built on, and a served prediction nobody
         # ever scores is a prediction that taught us nothing.
-        cron(resolve_prediction_outcomes, minute=41, max_tries=2),
+        cron(
+            resolve_prediction_outcomes,
+            minute=41,
+            max_tries=2,
+            timeout=stratz_slice_timeout(OUTCOMES_PER_RUN),
+        ),
         # The history backfill, which had no schedule at all and only advanced when somebody
         # ran the CLI. 23688 maps remain, so at a few hundred an hour it is days of work that
         # nobody should have to babysit.
@@ -72,17 +82,28 @@ class WorkerSettings:
         # Bounded per run rather than left to fetch until it is refused - see
         # `DETAILS_PER_HOUR`. Never retried: a failed slice is not worth a second helping of
         # somebody else's quota, and the next hour picks up exactly where it stopped.
-        cron(backfill_details_hourly, minute=11, max_tries=1),
-        # Six minutes behind the outcome resolver, because it is what finishes that job:
-        # the resolver stores a payload and this is the step that reads the outcome out of
-        # it. Without it the chain ended in the raw table - every job green, the accuracy
-        # dashboard empty, and nothing anywhere saying why.
+        cron(
+            backfill_details_hourly,
+            minute=11,
+            max_tries=1,
+            timeout=stratz_slice_timeout(DETAILS_PER_HOUR),
+        ),
+        # Behind the outcome resolver, because it is what finishes that job: the resolver
+        # stores a payload and this is the step that reads the outcome out of it. Without it
+        # the chain ended in the raw table - every job green, the accuracy dashboard empty,
+        # and nothing anywhere saying why.
         #
-        # The gap is a guess, not a measurement: the resolver's own run time is unbounded
-        # (it fetches one match at a time and its queue is however many predictions went
-        # unscored). Missing the gap costs an hour of latency, not a row - both jobs are
-        # idempotent and the next pass picks up whatever the last one was too early for.
-        cron(normalize_stored_payloads, minute=47, max_tries=1),
+        # The gap used to be a guess. It is now the resolver's worst case: `OUTCOMES_PER_RUN`
+        # maps at the STRATZ throttle is 400 seconds, so :41 + 6m40s = :47:40 - which the old
+        # :47 slot sat *inside*, and a full queue would have run straight past it. :52 clears
+        # it with four minutes to spare. Measured 2026-09-01: real runs took 288s and 228s,
+        # and this pass itself takes 61s over 28595 summary and 6001 detail payloads, so the
+        # pair fits inside the hour with room left.
+        #
+        # Still two crons rather than the resolver enqueueing this one, deliberately: a
+        # resolver that dies should not take normalization with it, and missing the gap costs
+        # an hour of latency, not a row - both jobs are idempotent.
+        cron(normalize_stored_payloads, minute=52, max_tries=1),
         # Phase 7. Once a day rather than hourly: the window is seven days wide, so an
         # hourly verdict would be the same verdict twenty-four times, and an alert that
         # repeats itself all day is one people learn to close.
