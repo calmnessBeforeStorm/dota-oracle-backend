@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.logging import get_logger
 from app.db.models.matches import Match
+from app.db.models.reference import League
 from app.db.models.training import MatchSnapshot
 
 log = get_logger(__name__)
@@ -43,6 +44,15 @@ class SnapshotRow:
     features: dict[str, float]
     radiant_win: bool
     start_time: datetime
+    #: The league's tier, for section 5.4 - sample weights and, more importantly, which rows
+    #: the calibrator is fitted on. Not a feature: `tier` was taken out of the vector on
+    #: 2026-08-28 because section 5.4 pins it to 1 at inference, so a tier that varies in
+    #: training is train/serve skew by construction. Weighting by it has no such problem,
+    #: because the weight is only ever used while fitting.
+    #:
+    #: "unknown" for a league nobody has mapped and for a map with no league at all. That is
+    #: 72% of the archive today, which is the reason the weights below are cautious.
+    tier: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -91,8 +101,14 @@ async def load_snapshots(
                     MatchSnapshot.features,
                     MatchSnapshot.radiant_win,
                     Match.start_time,
+                    League.tier,
                 )
                 .join(Match, Match.match_id == MatchSnapshot.match_id)
+                # Outer, because a map can reach the training set before its league does -
+                # the detail payload creates the match row, and the summary layer owns
+                # `league_id` (ingestion invariant 13). An inner join would silently drop
+                # every such map from training.
+                .outerjoin(League, League.league_id == Match.league_id)
                 .order_by(Match.start_time, MatchSnapshot.match_id, MatchSnapshot.minute)
             )
         ).all()
@@ -104,8 +120,9 @@ async def load_snapshots(
             features={k: float(v) for k, v in dict(features).items()},
             radiant_win=bool(radiant_win),
             start_time=start_time,
+            tier=str(tier) if tier else "unknown",
         )
-        for match_id, minute, features, radiant_win, start_time in rows
+        for match_id, minute, features, radiant_win, start_time, tier in rows
     ]
 
 
