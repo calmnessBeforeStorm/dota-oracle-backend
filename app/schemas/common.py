@@ -173,6 +173,44 @@ class ModelVersionInfo(BaseModel):
     sample_size: int
 
 
+class ModelTraining(BaseModel):
+    """What the served model was fitted and validated on - its model card, in public form.
+
+    **This is not the same measurement as the rest of the dashboard, and the page must never
+    let them be read as one number.** The figures here come from a held-out slice of parsed
+    replays: a lot of matches, scored once, offline. The figures beside them come from
+    predictions actually served to visitors, built from the live scoreboard, and there are
+    only ever as many of those as there were matches on air while this version was active.
+
+    Without this block the page states the second and implies the first is missing. A visitor
+    reading "9 matches, do not trust these numbers" concludes the model was never validated,
+    when it was validated on 1293. Both are true and neither substitutes for the other -
+    which is the whole point of section 6.4.
+    """
+
+    trained_at: datetime
+    train_matches: int
+    train_rows: int
+    #: First and last day of the slice, as the card stores them.
+    train_window: list[str]
+    holdout_matches: int
+    holdout_rows: int
+    holdout_window: list[str]
+    holdout_log_loss: float
+    holdout_brier: float
+    holdout_ece: float
+    #: Empty `gate_failures` means it beat every baseline in every minute bucket (section 7.3).
+    passes_gate: bool
+    gate_failures: list[str] = []
+    #: Comparisons the holdout could not decide. A gate passed on ties is not a gate passed on
+    #: wins, and hiding the difference here would be the flattery the dashboard exists to avoid.
+    gate_ties: list[str] = []
+    calibrator: str
+    #: Section 5.4 tier weights.
+    weighted: bool = False
+    feature_count: int
+
+
 class ModelMetrics(BaseModel):
     """F6: public calibration dashboard (spec section 8.1).
 
@@ -187,7 +225,19 @@ class ModelMetrics(BaseModel):
     #: belonging to no model at all.
     model_version: str
     sample_size: int
+    #: Matches whose outcome is known, i.e. what the numbers below are computed from.
     matches: int
+    #: Every match this version predicted, scored or not. The gap between this and `matches`
+    #: is the question the page kept being asked: predictions exist only for matches that were
+    #: on air while the version was serving, and are scored only once the match has ended and
+    #: its outcome has been fetched.
+    predicted_matches: int = 0
+    awaiting_outcome: int = 0
+    first_prediction_at: datetime | None = None
+    last_prediction_at: datetime | None = None
+    #: The model card, when the version has one. Baselines do not: they are code, not
+    #: artifacts, and were never fitted on a slice anybody held out.
+    training: ModelTraining | None = None
     log_loss: float | None = None
     brier: float | None = None
     ece: float | None = None

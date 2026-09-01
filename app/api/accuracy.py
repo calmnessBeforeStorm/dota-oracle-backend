@@ -121,6 +121,43 @@ async def scored_versions(session: AsyncSession) -> list[ModelVersionInfo]:
     ]
 
 
+@dataclass(frozen=True)
+class ServingProgress:
+    """How much live evidence this version has accumulated, scored or not.
+
+    The dashboard could only ever say how many matches it had *scored*, which made the
+    smallness of that number look like a fault. Most of the answer is elsewhere: a version
+    predicts only the matches that are on air while it serves, and scores them only once they
+    end and their outcome is fetched. Both halves belong on the page.
+    """
+
+    predicted_matches: int
+    first_prediction_at: datetime | None
+    last_prediction_at: datetime | None
+
+
+async def serving_progress(session: AsyncSession, version: str) -> ServingProgress:
+    """Every match this version predicted, whether or not it can be scored yet.
+
+    Counted in matches, not rows (invariant 3): the poller writes a row every thirty seconds,
+    so an hour of one game would otherwise read as a hundred observations.
+    """
+    row = (
+        await session.execute(
+            select(
+                func.count(func.distinct(Prediction.match_id)),
+                func.min(Prediction.predicted_at),
+                func.max(Prediction.predicted_at),
+            ).where(Prediction.model_version == version)
+        )
+    ).one()
+    return ServingProgress(
+        predicted_matches=int(row[0] or 0),
+        first_prediction_at=row[1],
+        last_prediction_at=row[2],
+    )
+
+
 def metrics_from(version: str, scored: Sequence[ScoredPrediction]) -> ModelMetrics:
     """Assemble the dashboard payload. An empty slice yields empty tables, not zeroes.
 

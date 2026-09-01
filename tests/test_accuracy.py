@@ -204,3 +204,47 @@ class TestMetrics:
 
         assert honest.ece is not None and overconfident.ece is not None
         assert honest.ece < overconfident.ece
+
+
+class TestTrainingStatus:
+    """The page kept being read as "this model was never validated".
+
+    It said 9 matches and stopped, because 9 was all it knew: predictions exist only for
+    matches that were on air while a version served. The holdout - 1293 matches, scored once,
+    offline - lives on the model card and was not exposed at all.
+    """
+
+    @pytest.mark.asyncio
+    async def test_progress_counts_every_predicted_match_not_only_scored_ones(
+        self, session: AsyncSession
+    ) -> None:
+        from app.api.accuracy import serving_progress
+
+        session.add_all([Match(match_id=1, radiant_win=True), Match(match_id=2)])
+        await session.flush()
+        await add_prediction(session, 1, 5, 0.6, version="v1")
+        await add_prediction(session, 1, 6, 0.6, version="v1")
+        await add_prediction(session, 2, 5, 0.4, version="v1")
+
+        progress = await serving_progress(session, "v1")
+
+        # Two matches, three rows. Counted in matches (invariant 3).
+        assert progress.predicted_matches == 2
+        assert progress.first_prediction_at is not None
+        assert progress.last_prediction_at is not None
+
+    @pytest.mark.asyncio
+    async def test_a_version_that_never_served_has_no_progress(self, session: AsyncSession) -> None:
+        from app.api.accuracy import serving_progress
+
+        progress = await serving_progress(session, "never-served")
+
+        assert progress.predicted_matches == 0
+        assert progress.first_prediction_at is None
+
+    def test_a_baseline_has_no_card_and_says_so_rather_than_zero(self) -> None:
+        """`holdout_matches: 0` on a baseline would read as a model that failed validation.
+        A baseline is code; nobody held a slice back from it."""
+        from app.api.routes.model import _training
+
+        assert _training("baseline-logistic-0.2") is None
