@@ -22,6 +22,7 @@ from app.ingestion.workers.normalize_worker import normalize_stored_payloads
 from app.ingestion.workers.outcomes import OUTCOMES_PER_RUN, resolve_prediction_outcomes
 from app.ingestion.workers.sync import sync_liquipedia
 from app.workers.drift import check_calibration_drift
+from app.workers.training_set import refresh_training_set
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -53,6 +54,7 @@ class WorkerSettings:
         resolve_prediction_outcomes,
         normalize_stored_payloads,
         check_calibration_drift,
+        refresh_training_set,
     ]
     cron_jobs: ClassVar[list[Any]] = [
         # Live loop: every 30s, per spec section 2.4.
@@ -104,6 +106,21 @@ class WorkerSettings:
         # resolver that dies should not take normalization with it, and missing the gap costs
         # an hour of latency, not a row - both jobs are idempotent.
         cron(normalize_stored_payloads, minute=52, max_tries=1),
+        # The last link that only moved when a person typed it. Once a day rather than hourly
+        # because that is the cadence the data has: `backfill_details_hourly` adds a few
+        # hundred maps an hour, and a dataset at most a day behind the outcomes is not what
+        # limits anything here. 04:05 UTC is the quietest hour for professional Dota, and it
+        # is thirteen minutes after the 03:52 normalization it wants to read the output of.
+        #
+        # `prematch` and `featurize` are one job rather than two crons, because a `featurize`
+        # that runs without a fresh `prematch` writes a prior of 0.5 into rows that sit beside
+        # measured ones - see `app.workers.training_set` for why that is worse than a stale
+        # table.
+        # Measured 2026-09-01 on 6112 stored payloads: 11s to rebuild pre-match features and
+        # 42s to rebuild every snapshot, 53s for the pair. The timeout is far above that on
+        # purpose - the cost grows with the archive and the archive is the point - but it is
+        # a bound rather than arq's default 300s, which this would outgrow without saying so.
+        cron(refresh_training_set, hour=4, minute=5, max_tries=1, timeout=1800),
         # Phase 7. Once a day rather than hourly: the window is seven days wide, so an
         # hourly verdict would be the same verdict twenty-four times, and an alert that
         # repeats itself all day is one people learn to close.

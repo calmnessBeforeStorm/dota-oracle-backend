@@ -87,3 +87,11 @@ def test_liveness_record_expires_fast_enough_to_mean_something() -> None:
     process that serves no HTTP - it failed always, which is the same amount of information.
     """
     assert WorkerSettings.health_check_interval <= 60
+
+
+def test_the_training_set_has_a_schedule_at_all() -> None:
+    """The last link that only moved when a person typed it (phases 3, 11)."""
+    from app.workers.training_set import refresh_training_set
+
+    job = _job(refresh_training_set)
+    assert job.timeout_s is not None and job.timeout_s > ARQ_DEFAULT_JOB_TIMEOUT
