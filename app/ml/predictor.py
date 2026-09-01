@@ -13,6 +13,8 @@ from typing import Protocol
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.features.live import as_vector
+from app.ml.calibration import PlattCalibrator
+from app.ml.registry import load_card
 
 log = get_logger(__name__)
 
@@ -101,16 +103,33 @@ class BaselinePredictor:
 
 
 class LightGBMPredictor:
-    """Loads a LightGBM booster from MODEL_DIR. Requires the `ml` extra."""
+    """Loads a LightGBM booster from MODEL_DIR and the calibration fitted alongside it.
 
-    def __init__(self, model_path: Path, version: str) -> None:
-        import lightgbm as lgb  # imported lazily: the API image does not ship the ml extra
+    Requires the `ml` extra. **The calibrator is part of the model, not a reporting detail.**
+    Training fits it on the validation slice and every number on the model card - the holdout
+    log loss, the ECE, the gate verdict - is measured after it is applied. Loading the booster
+    alone would serve something that had never been scored, and it would look completely
+    normal: same features, same version string, probabilities in the right range.
+
+    Today the gap happens to be small (measured on `lgbm-20260901-080345`: a=1.0134,
+    b=-0.0048, log loss 0.5252 raw against 0.5253 calibrated). That is a property of this
+    model, not of the design - `pipeline` records that isotonic once turned a holdout log loss
+    of 0.5685 into 0.6115 - so it is not a reason to leave the transform on the floor.
+
+    A card with no coefficients describes the identity, which is what older runs effectively
+    served.
+    """
+
+    def __init__(self, model_path: Path, version: str, calibrator: PlattCalibrator) -> None:
+        import lightgbm as lgb  # lazy: nothing else in the serving path needs it at import
 
         self.version = version
         self._booster = lgb.Booster(model_file=str(model_path))
+        self._calibrator = calibrator
 
     def predict_proba_radiant(self, features: dict[str, float]) -> float:
-        return float(self._booster.predict([as_vector(features)])[0])
+        raw = float(self._booster.predict([as_vector(features)])[0])
+        return self._calibrator.apply_one(raw)
 
 
 _predictor: Predictor | None = None
@@ -128,8 +147,15 @@ def get_predictor() -> Predictor:
         model_path = Path(settings.model_dir) / f"{version}.txt"
         if model_path.exists():
             try:
-                _predictor = _Bounded(LightGBMPredictor(model_path, version))
-                log.info("model.loaded", version=version)
+                card = load_card(settings.model_dir, version)
+                calibrator = PlattCalibrator(a=card.calibrator_a, b=card.calibrator_b)
+                _predictor = _Bounded(LightGBMPredictor(model_path, version, calibrator))
+                log.info(
+                    "model.loaded",
+                    version=version,
+                    calibrator=card.calibrator,
+                    passes_gate=card.passes_gate,
+                )
                 return _predictor
             except Exception as exc:
                 log.error("model.load_failed", version=version, error=str(exc))

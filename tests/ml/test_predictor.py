@@ -7,8 +7,12 @@ every comeback that has ever happened started from a position some number called
 
 import math
 
+import pytest
+
+from app.core.config import get_settings
 from app.features.game_state import GameState, SeriesContext, TeamState
 from app.features.live import build_live_features
+from app.ml import predictor as predictor_module
 from app.ml.predictor import (
     SERVING_BOUNDS,
     BaselinePredictor,
@@ -86,18 +90,37 @@ class TestWrapping:
         history in two the day the guard was added."""
         assert _Bounded(Certain(0.5)).version == "certain-1.0"
 
-    def test_the_served_predictor_is_bounded(self) -> None:
+    def test_the_served_predictor_is_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The guard belongs to serving, not to the placeholder: phase 4 swaps the booster
-        in, and a rule written into the baseline would have left with it."""
+        in, and a rule written into the baseline would have left with it.
+
+        The active model is pinned off rather than taken from the environment. This test used
+        to read whatever `.env` said and passed only because that had always been empty; the
+        day a model was promoted it started asking a boosted tree to extrapolate to a 5000
+        gold lead, which trees do not do, and failed for a reason that had nothing to do with
+        the guard it is about.
+        """
+        # pydantic-settings, so `model_copy`; `dataclasses.replace` refuses it.
+        without_model = get_settings().model_copy(update={"active_model_version": None})
+        monkeypatch.setattr(predictor_module, "get_settings", lambda: without_model)
         reset_predictor()
         try:
-            predictor = get_predictor()
+            served = get_predictor()
             # A lead far past anything a real match produces.
-            extreme = predictor.predict_proba_radiant({"gold_adv_norm": 5000.0, "minute": 60.0})
+            extreme = served.predict_proba_radiant({"gold_adv_norm": 5000.0, "minute": 60.0})
         finally:
             reset_predictor()
 
+        assert isinstance(served, _Bounded)
         assert extreme == HIGH
+
+    def test_whatever_is_active_comes_back_bounded(self) -> None:
+        """Structural, so it holds for the configured model as well as for the baseline."""
+        reset_predictor()
+        try:
+            assert isinstance(get_predictor(), _Bounded)
+        finally:
+            reset_predictor()
 
     def test_the_baseline_itself_still_saturates(self) -> None:
         """Kept honest on purpose: the baseline is spec section 7.3's benchmark and must not

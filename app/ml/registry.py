@@ -44,7 +44,18 @@ class ModelCard:
     baseline_log_loss_by_minute: dict[str, dict[str, float]]
     #: Empty means the model beat every baseline in every bucket and may be served.
     gate_failures: list[str] = field(default_factory=list)
+    #: Comparisons this holdout could not decide either way. Not failures - but a gate passed
+    #: on ties is a different thing from one passed on wins, and the card has to say which.
+    gate_ties: list[str] = field(default_factory=list)
     calibrator: str = "platt"
+    #: The fitted calibration, `sigmoid(a * logit(p_raw) + b)`, so the serving path can apply
+    #: the same transform the evaluation did. Recording only the *name* was not enough and
+    #: was not obviously not enough: the card said "platt", the reported metrics were
+    #: post-calibration, and the booster on disk was raw - so promoting a model served
+    #: something that had never been scored. Defaults are the identity, which is what an old
+    #: card without these fields describes and what `IdentityCalibrator` does.
+    calibrator_a: float = 1.0
+    calibrator_b: float = 0.0
     notes: str = ""
 
     @property
@@ -68,6 +79,11 @@ class ModelCard:
         payload["train_window"] = tuple(payload["train_window"])
         payload["holdout_window"] = tuple(payload["holdout_window"])
         payload["feature_order"] = tuple(payload["feature_order"])
+        # Cards written before the coefficients were stored describe the identity transform,
+        # which is what the serving path did with them anyway.
+        payload.setdefault("gate_ties", [])
+        payload.setdefault("calibrator_a", 1.0)
+        payload.setdefault("calibrator_b", 0.0)
         return cls(**payload)
 
 

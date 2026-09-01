@@ -197,7 +197,10 @@ async def train(
         for baseline in fit_baselines(train_features, train_labels)
     }
 
-    result = evaluate(holdout_labels, holdout_probs, holdout_minutes, baselines)
+    # Match ids, because the gate resamples by match: forty snapshots of one game are one
+    # observation, and a bootstrap over rows reports an interval several times too narrow.
+    holdout_match_ids = [row.match_id for row in split.holdout]
+    result = evaluate(holdout_labels, holdout_probs, holdout_minutes, baselines, holdout_match_ids)
 
     version = new_version()
     summary = split.summary()
@@ -217,7 +220,10 @@ async def train(
         log_loss_by_minute=result.log_loss_by_minute,
         baseline_log_loss_by_minute=result.baseline_log_loss_by_minute,
         gate_failures=result.failures,
+        gate_ties=result.ties,
         calibrator=calibrator_name,
+        calibrator_a=calibrator.a,
+        calibrator_b=calibrator.b,
         notes=notes,
     )
 

@@ -58,14 +58,22 @@ def _checked(y_true: Sequence[bool], y_prob: Sequence[float]) -> None:
         raise ValueError("no rows to score")
 
 
+def row_log_loss(actual: bool, p: float) -> float:
+    """One row's negative log likelihood.
+
+    Exported so the significance tests can weigh individual rows against each other with the
+    same clamp `log_loss` uses. Two clamps would be two metrics wearing one name.
+    """
+    clipped = min(max(float(p), _EPS), 1.0 - _EPS)
+    return -math.log(clipped) if actual else -math.log(1.0 - clipped)
+
+
 def log_loss(y_true: Sequence[bool], y_prob: Sequence[float]) -> float:
     """Mean negative log likelihood. Lower is better; 0.693 is a coin flip."""
     _checked(y_true, y_prob)
-    total = 0.0
-    for actual, p in zip(y_true, y_prob, strict=True):
-        clipped = min(max(float(p), _EPS), 1.0 - _EPS)
-        total -= math.log(clipped) if actual else math.log(1.0 - clipped)
-    return total / len(y_true)
+    return sum(row_log_loss(actual, p) for actual, p in zip(y_true, y_prob, strict=True)) / len(
+        y_true
+    )
 
 
 def brier(y_true: Sequence[bool], y_prob: Sequence[float]) -> float:

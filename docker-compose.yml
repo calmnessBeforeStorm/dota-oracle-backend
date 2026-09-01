@@ -118,6 +118,14 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app/app
+      # The poller is a serving path, not a training one: it calls `get_predictor()` on every
+      # tick. Without this the container has no /app/models at all, so `ACTIVE_MODEL_VERSION`
+      # resolves to a file that is not there and the worker quietly serves the baseline while
+      # the API - started from the host, where ./models does exist - serves the real model.
+      # Two different models answering as one version is worse than either.
+      #
+      # Read-only: a trained artifact is written by the trainer and by nothing else.
+      - ./models:/app/models:ro
     command: arq app.workers.settings.WorkerSettings
     # Not the image's healthcheck. That one curls the API's /api/health, which this process
     # does not serve, so the container reported `unhealthy` from the second it started and

@@ -31,9 +31,13 @@ FROM base AS dev
 RUN pip install -e ".[dev]"
 
 
-# ML image: the training pipeline (phase 4). Kept out of `base` on purpose - the API process
-# only ever loads a trained booster, and LightGBM plus scikit-learn have no business in the
-# image that serves requests. Training is run as a script, never from the API
-# (spec section 9.3).
+# ML image: the training pipeline (phase 4). Kept out of `base` on purpose - training is run
+# as a script, never from the API (spec section 9.3), and scikit-learn has no business in the
+# image that serves requests.
+#
+# LightGBM is *not* part of this split any more. It is a runtime dependency in pyproject,
+# because loading a trained booster is what the serving path does - leaving it here meant no
+# image that answers a request could read a model, and the fallback to the baseline was
+# silent enough to survive until somebody actually promoted one.
 FROM dev AS ml
-RUN pip install "lightgbm>=4.5" "scikit-learn>=1.6" "numpy>=2.1"
+RUN pip install "scikit-learn>=1.6" "numpy>=2.1"
