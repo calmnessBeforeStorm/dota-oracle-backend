@@ -5,7 +5,6 @@ is a hard budget for the backfill. Every client goes through this class.
 """
 
 import asyncio
-import re
 from types import TracebackType
 from typing import Any, Self
 
@@ -18,27 +17,9 @@ from tenacity import (
 )
 
 from app.core.logging import get_logger
+from app.core.redaction import redact
 
 log = get_logger(__name__)
-
-
-#: Credentials we send as query parameters. httpx puts the full URL into the text of
-#: HTTPStatusError, which then lands in structlog and Sentry, so it gets scrubbed first.
-#: Anchored on the query separator and longest-alternative-first, so `api_key=` matches
-#: as a whole rather than as a bare `key=`.
-_SECRET_RE = re.compile(
-    r"([?&])(access_token|api_key|token|key)=[^&\s'\"]+",
-    re.IGNORECASE,
-)
-
-
-def redact(text: str) -> str:
-    """Replace the value of any credential query parameter with ***.
-
-    Applied to anything derived from a request URL before it reaches a log line or an
-    exception message. Cheap, and the alternative is an API key sitting in Sentry forever.
-    """
-    return _SECRET_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}=***", text)
 
 
 class RateLimitedError(Exception):

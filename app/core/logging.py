@@ -1,12 +1,45 @@
 """structlog JSON logging (spec section 9.5)."""
 
 import logging
+from collections.abc import Mapping
 
 import structlog
+
+from app.core.redaction import redact
+
+
+class RedactingFilter(logging.Filter):
+    """Scrub credentials out of every log record, whoever emitted it.
+
+    `redact` was applied where we build a message ourselves, which covers our own lines and
+    the exception text we raise. It does not cover libraries that log request URLs on their
+    own account, and one of them does: httpx logs `HTTP Request: GET <url> "200 OK"` at INFO,
+    so `docker compose logs worker` carried the full Steam API key on every poll - twice a
+    minute, forever, in a stream people paste into issues.
+
+    Installed on the root handler rather than on the httpx logger by name, because the next
+    library to do this will not be httpx and naming them one at a time is a list nobody
+    maintains. It is a filter and not a formatter so it applies whatever the output format is.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = redact(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(redact(a) if isinstance(a, str) else a for a in record.args)
+        elif isinstance(record.args, Mapping):
+            # `logging` unwraps a lone dict argument into `args`, for `%(name)s` formatting.
+            record.args = {
+                k: redact(v) if isinstance(v, str) else v for k, v in record.args.items()
+            }
+        return True
 
 
 def configure_logging(level: str = "INFO") -> None:
     logging.basicConfig(format="%(message)s", level=getattr(logging, level.upper(), logging.INFO))
+    for handler in logging.getLogger().handlers:
+        if not any(isinstance(f, RedactingFilter) for f in handler.filters):
+            handler.addFilter(RedactingFilter())
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
