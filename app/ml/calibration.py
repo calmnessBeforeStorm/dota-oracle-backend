@@ -78,7 +78,11 @@ class PlattCalibrator:
         return cls(a=a, b=bias - a * mean)
 
     def apply(self, raw: Sequence[float]) -> list[float]:
-        return [_sigmoid(self.a * _logit(float(p)) + self.b) for p in raw]
+        return [self.apply_one(p) for p in raw]
+
+    def apply_one(self, raw: float) -> float:
+        """One probability, for the serving path - which has exactly one at a time."""
+        return _sigmoid(self.a * _logit(float(raw)) + self.b)
 
 
 @dataclass(frozen=True)
@@ -86,5 +90,12 @@ class IdentityCalibrator:
     """Used when there is nothing to fit on. Named rather than implied, so a run that
     skipped calibration says so in its model card."""
 
+    #: So a caller can persist any calibrator's coefficients without asking which kind it is.
+    a: float = 1.0
+    b: float = 0.0
+
     def apply(self, raw: Sequence[float]) -> list[float]:
         return [float(p) for p in raw]
+
+    def apply_one(self, raw: float) -> float:
+        return float(raw)

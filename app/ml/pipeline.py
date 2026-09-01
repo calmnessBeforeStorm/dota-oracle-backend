@@ -218,6 +218,8 @@ async def train(
         baseline_log_loss_by_minute=result.baseline_log_loss_by_minute,
         gate_failures=result.failures,
         calibrator=calibrator_name,
+        calibrator_a=calibrator.a,
+        calibrator_b=calibrator.b,
         notes=notes,
     )
 
