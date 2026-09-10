@@ -27,9 +27,10 @@ over 60 matches. All three stay on `GameState` as raw data and out of the featur
 """
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from functools import cache
 
-from app.features.game_state import GameState
+from app.features.game_state import GameState, TeamState
 
 #: `tier` is deliberately absent, and it is a trap rather than a weak feature. Section 5.4
 #: fixes it to 1 at inference, because the product only serves Tier 1 - so a tier that varies
@@ -90,6 +91,23 @@ PREMATCH_FEATURE_NAMES: tuple[str, ...] = (
     "maps_last_24h_diff",
 )
 
+#: Everything the pre-match sweep owns, prior included.
+PREMATCH_BLOCK: tuple[str, ...] = (*PREMATCH_FEATURE_NAMES, "prematch_prior")
+
+#: The features a model may consume today: those the live path fills from the payload.
+#:
+#: The builder still computes the pre-match block, because `featurize` stores it and the
+#: poller will eventually pass it. But `from_live_league_game` does not pass it, so at
+#: serving time every one of those features is the default below - the same number in every
+#: match - while training saw real values. Measured 10.09.2026 on `lgbm-20260901-102407`:
+#: 1575 of its 2190 splits stood on that block, and `prematch_prior` arrived as 0.5, a value
+#: that appears in exactly 0 of 242295 training rows. Worse, `skill_sigma_sum` arrived as
+#: 0.0, below its training minimum of 1.2356 - a value the model had never seen at all.
+#:
+#: Training on a signal the serving path cannot supply is train/serve skew whatever the
+#: number substituted, so a model is trained on this set until the poller supplies the rest.
+SERVED_FEATURES: tuple[str, ...] = tuple(n for n in FEATURE_ORDER if n not in PREMATCH_BLOCK)
+
 
 #: Softens the division near minute zero, where the raw ratio would explode.
 #:
@@ -143,9 +161,12 @@ def build_live_features(state: GameState) -> dict[str, float]:
         "prematch_prior": 0.5 if state.prematch_prior is None else state.prematch_prior,
     }
 
-    # Zero is the neutral value for every one of these: they are differences between the
-    # two sides, so "we know nothing" and "the sides are equal" coincide. That is not true
-    # of the state features above, which is why only these default.
+    # Zero reads as neutral for most of these - they are differences between the two sides,
+    # so "we know nothing" and "the sides are equal" coincide. It is NOT true of
+    # `skill_sigma_sum`, which is a sum of two TrueSkill sigmas and never reaches zero in
+    # training (minimum 1.2356 over 242295 rows): zero there is a value the model has never
+    # seen. Either way a default is only honest while nothing consumes it - see
+    # `SERVED_FEATURES`.
     for name in PREMATCH_FEATURE_NAMES:
         features[name] = float(state.prematch.get(name, 0.0))
     missing = set(FEATURE_ORDER) - features.keys()
@@ -154,6 +175,44 @@ def build_live_features(state: GameState) -> dict[str, float]:
     return features
 
 
-def as_vector(features: dict[str, float]) -> list[float]:
-    """Ordered vector for the model. Order is fixed by FEATURE_ORDER, never by dict order."""
-    return [features[name] for name in FEATURE_ORDER]
+@cache
+def live_defaults() -> Mapping[str, float]:
+    """What the live path substitutes for the features it does not supply.
+
+    Derived by running the builder over a state shaped the way the poller shapes one -
+    `prematch` empty, `prematch_prior` absent - instead of restating the constants. Restating
+    them is exactly how the comment above those defaults came to describe `skill_sigma_sum`
+    as a difference between the two sides, which it is not. A copy drifts; this cannot.
+    """
+    blank = GameState(
+        match_id=0,
+        minute=1,
+        radiant=TeamState(),
+        dire=TeamState(),
+        gold_adv=0,
+        xp_adv=0,
+    )
+    built = build_live_features(blank)
+    return {name: built[name] for name in PREMATCH_BLOCK}
+
+
+def serving_view(features: Mapping[str, float]) -> dict[str, float]:
+    """A training row as the serving path would actually produce it.
+
+    The gate scores the holdout through this, so what a card reports is what production
+    would run. Scoring the stored row instead measures a model that only exists in the
+    training set: `match_snapshots` carries a real pre-match block, and the live path
+    carries none of it.
+    """
+    return {**features, **live_defaults()}
+
+
+def as_vector(features: dict[str, float], order: Sequence[str] = FEATURE_ORDER) -> list[float]:
+    """Ordered vector for the model. Order comes from the caller, never from dict order.
+
+    `order` is the feature set the model was trained on, which is not always the full
+    builder output: a model trained on `SERVED_FEATURES` reads 19 of the 28 keys here.
+    Passing the model's own list - `ModelCard.feature_order` at serving time - is what keeps
+    a booster from being fed a vector in a shape it was never fitted on.
+    """
+    return [features[name] for name in order]

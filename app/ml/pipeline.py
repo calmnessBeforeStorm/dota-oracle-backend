@@ -19,7 +19,7 @@ the API image, which does not carry the `ml` extra, and importing at the top wou
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.features.live import FEATURE_ORDER, as_vector
+from app.features.live import SERVED_FEATURES, as_vector, serving_view
 from app.ml.baselines import fit_baselines
 from app.ml.calibration import IdentityCalibrator, PlattCalibrator
 from app.ml.dataset import (
@@ -162,12 +162,26 @@ class TrainingResult:
     booster_path: Path
 
 
-def _matrix(rows: Sequence[SnapshotRow]) -> tuple[list[list[float]], list[int]]:
-    """Feature vectors in `FEATURE_ORDER`, never in dict order (spec section 6.4)."""
+def _matrix(
+    rows: Sequence[SnapshotRow], order: Sequence[str]
+) -> tuple[list[list[float]], list[int]]:
+    """Feature vectors in the model's own order, never in dict order (spec section 6.4)."""
     return (
-        [as_vector(row.features) for row in rows],
+        [as_vector(row.features, order) for row in rows],
         [1 if row.radiant_win else 0 for row in rows],
     )
+
+
+def as_served(rows: Sequence[SnapshotRow]) -> list[SnapshotRow]:
+    """The holdout as the serving path would produce it (spec section 6.4).
+
+    Everything a card reports is measured on these rows, so the number describes the model
+    that will actually run. Scoring the stored rows instead measures a configuration that
+    exists only in the training set - `match_snapshots` carries a real pre-match block and
+    the live path supplies none of it - and it does so invisibly, because a model scored on
+    inputs it never sees still reports probabilities in the right range.
+    """
+    return [replace(row, features=serving_view(row.features)) for row in rows]
 
 
 def train_booster(  # type: ignore[no-untyped-def]
@@ -175,6 +189,7 @@ def train_booster(  # type: ignore[no-untyped-def]
     params: dict[str, Any] | None = None,
     rounds: int = DEFAULT_ROUNDS,
     weighted: bool = True,
+    feature_names: Sequence[str] = SERVED_FEATURES,
 ):
     """Fit LightGBM on the training slice, early-stopping on validation.
 
@@ -187,8 +202,8 @@ def train_booster(  # type: ignore[no-untyped-def]
     import lightgbm as lgb
     import numpy as np
 
-    x_train, y_train = _matrix(split.train)
-    x_val, y_val = _matrix(split.validation)
+    x_train, y_train = _matrix(split.train, feature_names)
+    x_val, y_val = _matrix(split.validation, feature_names)
 
     # LightGBM takes an ndarray, not a list of lists. numpy is imported here rather than at
     # module scope for the same reason lightgbm is: the API image has neither.
@@ -196,7 +211,7 @@ def train_booster(  # type: ignore[no-untyped-def]
         np.asarray(x_train, dtype=np.float64),
         label=np.asarray(y_train, dtype=np.int32),
         weight=(np.asarray(tier_weights(split.train), dtype=np.float64) if weighted else None),
-        feature_name=list(FEATURE_ORDER),
+        feature_name=list(feature_names),
     )
     val_set = lgb.Dataset(
         np.asarray(x_val, dtype=np.float64),
@@ -215,10 +230,10 @@ def train_booster(  # type: ignore[no-untyped-def]
     return booster
 
 
-def _predict(booster: Any, rows: Sequence[SnapshotRow]) -> list[float]:
+def _predict(booster: Any, rows: Sequence[SnapshotRow], order: Sequence[str]) -> list[float]:
     import numpy as np
 
-    vectors, _ = _matrix(rows)
+    vectors, _ = _matrix(rows, order)
     return [float(p) for p in booster.predict(np.asarray(vectors, dtype=np.float64))]
 
 
@@ -229,6 +244,7 @@ async def train(
     rounds: int = DEFAULT_ROUNDS,
     notes: str = "",
     weighted: bool = True,
+    feature_names: Sequence[str] = SERVED_FEATURES,
 ) -> TrainingResult:
     """The whole phase-4 run. Writes an artifact and a card; never activates anything.
 
@@ -245,7 +261,12 @@ async def train(
         raise ValueError("no snapshots to train on - run `ingestion.cli featurize` first")
     split = split_by_time(rows)
 
-    booster = train_booster(split, params, rounds, weighted=weighted)
+    booster = train_booster(split, params, rounds, weighted=weighted, feature_names=feature_names)
+
+    # Every number below is measured on the serving view, so the card describes the model
+    # that will run rather than the one that was fitted. With the default feature set the
+    # two coincide; with the full set they do not, and the gate is where that has to show.
+    holdout = as_served(split.holdout)
 
     # Calibrate on validation, never on train (the model has already seen it) and never on
     # holdout (which must stay untouched until it is scored once). Section 5.4 additionally
@@ -262,13 +283,14 @@ async def train(
         )
     else:
         calibrator = PlattCalibrator.fit(
-            _predict(booster, fit_on), [row.radiant_win for row in fit_on]
+            _predict(booster, as_served(fit_on), feature_names),
+            [row.radiant_win for row in fit_on],
         )
         log.info("model.calibrated", domain=calibrator_name)
 
-    holdout_probs = calibrator.apply(_predict(booster, split.holdout))
-    holdout_labels = [row.radiant_win for row in split.holdout]
-    holdout_minutes = [row.minute for row in split.holdout]
+    holdout_probs = calibrator.apply(_predict(booster, holdout, feature_names))
+    holdout_labels = [row.radiant_win for row in holdout]
+    holdout_minutes = [row.minute for row in holdout]
 
     # Baselines are fitted on train and scored on holdout, exactly like the candidate.
     # Fitting them on holdout would let them peek at the answers the model cannot see.
@@ -279,7 +301,7 @@ async def train(
     fit_rows = baseline_fit_slice(split.train)
     train_features = [row.features for row in fit_rows]
     train_labels = [row.radiant_win for row in fit_rows]
-    holdout_features = [row.features for row in split.holdout]
+    holdout_features = [row.features for row in holdout]
     baselines = {
         baseline.name: baseline.predict(holdout_features)
         for baseline in fit_baselines(train_features, train_labels)
@@ -287,7 +309,7 @@ async def train(
 
     # Match ids, because the gate resamples by match: forty snapshots of one game are one
     # observation, and a bootstrap over rows reports an interval several times too narrow.
-    holdout_match_ids = [row.match_id for row in split.holdout]
+    holdout_match_ids = [row.match_id for row in holdout]
     result = evaluate(holdout_labels, holdout_probs, holdout_minutes, baselines, holdout_match_ids)
 
     version = new_version()
@@ -301,7 +323,7 @@ async def train(
         train_rows=int(summary["train_rows"]),
         holdout_matches=int(summary["holdout_matches"]),
         holdout_rows=int(summary["holdout_rows"]),
-        feature_order=FEATURE_ORDER,
+        feature_order=tuple(feature_names),
         holdout_log_loss=result.log_loss,
         holdout_brier=result.brier,
         holdout_ece=result.ece,

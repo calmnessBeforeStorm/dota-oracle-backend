@@ -7,6 +7,7 @@ LightGBM cannot clearly beat this, there is a bug somewhere.
 """
 
 import math
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -120,15 +121,37 @@ class LightGBMPredictor:
     served.
     """
 
-    def __init__(self, model_path: Path, version: str, calibrator: PlattCalibrator) -> None:
+    def __init__(
+        self,
+        model_path: Path,
+        version: str,
+        calibrator: PlattCalibrator,
+        expected: Sequence[str] | None = None,
+    ) -> None:
         import lightgbm as lgb  # lazy: nothing else in the serving path needs it at import
 
         self.version = version
         self._booster = lgb.Booster(model_file=str(model_path))
         self._calibrator = calibrator
+        #: The names this booster was actually fitted on, read off the artifact rather than
+        #: taken from `FEATURE_ORDER`. The global list is what the *builder* produces, which
+        #: is not the same thing: a model trained on `SERVED_FEATURES` reads 19 of those 28
+        #: keys. Using the global order here fed a 19-feature booster a 28-wide row, and the
+        #: failure mode it does not catch is worse - two lists of equal length in a different
+        #: arrangement score silently, against the wrong features.
+        self.feature_order: tuple[str, ...] = tuple(self._booster.feature_name())
+        if expected is not None and tuple(expected) != self.feature_order:
+            # The card records what was measured; the booster is what answers. Different
+            # feature sets mean they are not the same model, and serving one while
+            # reporting the other is two models under a single version string.
+            raise ValueError(
+                f"model {version}: card lists {len(tuple(expected))} features, "
+                f"booster was fitted on {len(self.feature_order)} - card and artifact "
+                f"describe different models"
+            )
 
     def predict_proba_radiant(self, features: dict[str, float]) -> float:
-        raw = float(self._booster.predict([as_vector(features)])[0])
+        raw = float(self._booster.predict([as_vector(features, self.feature_order)])[0])
         return self._calibrator.apply_one(raw)
 
 

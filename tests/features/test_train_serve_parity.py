@@ -32,6 +32,7 @@ rather than in production three weeks later.
 
 import json
 import statistics
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -39,12 +40,18 @@ import pytest
 
 from app.features.adapters import steam
 from app.features.adapters.stratz import snapshot_at
-from app.features.live import FEATURE_ORDER, build_live_features
+from app.features.live import (
+    FEATURE_ORDER,
+    PREMATCH_FEATURE_NAMES,
+    SERVED_FEATURES,
+    build_live_features,
+)
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "train_serve_pairs.json"
 
 #: The features read out of a match payload, and so the only ones two sources can disagree
-#: about. Everything else in the vector is looked up from our own tables on both sides.
+#: about by value. Coverage of the rest of the vector is structural rather than numeric -
+#: see `TestTheLivePathSuppliesWhatTheModelConsumes`.
 COMPARED = (
     "minute",
     "log_minute",
@@ -101,6 +108,66 @@ def test_steam_adapter_counts_only_living_buildings() -> None:
     assert state.dire.barracks_count == 1
 
 
+#: Shaped after a real GetLiveLeagueGames entry - the payload the poller actually receives.
+LIVE_LEAGUE_SAMPLE: dict[str, Any] = {
+    "match_id": 7000000002,
+    "scoreboard": {
+        "duration": 1230.0,
+        "radiant": {
+            "score": 12,
+            "tower_state": 1926,
+            "barracks_state": 51,
+            "players": [{"net_worth": 14000}, {"net_worth": 12000}, {"net_worth": 10000}],
+        },
+        "dire": {
+            "score": 7,
+            "tower_state": 2047,
+            "barracks_state": 63,
+            "players": [{"net_worth": 11000}, {"net_worth": 9000}, {"net_worth": 8000}],
+        },
+    },
+}
+
+
+class TestTheLivePathSuppliesWhatTheModelConsumes:
+    """The half of parity the fixture cannot see (spec section 6.4).
+
+    `TestParity` below asks whether two sources that both read a payload agree on the
+    numbers. This asks something prior: whether the live path reads the number at all.
+    A feature the poller never fills still arrives at the model - as the builder's default,
+    identical in every match - and that is invisible to any comparison of served rows
+    against each other, because the constant is served consistently.
+
+    Measured 10.09.2026, this is how nine features reached production frozen: the poller
+    calls `from_live_league_game` without `prematch` or `prematch_prior`, so the pre-match
+    block defaulted to 0.0 and the prior to 0.5 in every live match, while training saw
+    real values spanning 0.130-0.889. The model was trained on a signal that does not exist
+    at serving time.
+    """
+
+    def test_no_model_feature_falls_back_to_a_default(self) -> None:
+        """Vary only what the poller leaves out; nothing the model reads may move.
+
+        If a feature changes between these two states, the live path is not supplying it -
+        the builder is, out of its own defaults.
+        """
+        as_polled = steam.from_live_league_game(LIVE_LEAGUE_SAMPLE)
+        as_if_known = replace(
+            as_polled,
+            prematch=dict.fromkeys(PREMATCH_FEATURE_NAMES, 1.0),
+            prematch_prior=0.75,
+        )
+
+        polled = build_live_features(as_polled)
+        known = build_live_features(as_if_known)
+        defaulted = sorted(name for name in SERVED_FEATURES if polled[name] != known[name])
+
+        assert not defaulted, (
+            f"{len(defaulted)} features the model consumes are not supplied by the live "
+            f"path and arrive as constants: {defaulted}"
+        )
+
+
 @pytest.fixture(scope="module")
 def paired() -> list[dict[str, Any]]:
     """Real matches for which we hold both the served features and the STRATZ payload."""
@@ -154,10 +221,16 @@ class TestTheFixtureItself:
         """The features parity is actually about, and only those.
 
         `COMPARED` is the part of the vector that is read out of a match payload, and it is
-        the only part that can drift between two sources reading two different payloads.
-        The rest - series context, venue, the pre-match block - is looked up from our own
-        tables on both sides, so it is identical by construction and has nothing to do with
-        skew.
+        the only part two sources reading two different payloads can disagree about.
+
+        This docstring used to add that the rest - series context, venue, the pre-match
+        block - "is looked up from our own tables on both sides, so it is identical by
+        construction". That was false for the pre-match block, and being written down is
+        what kept anyone from checking: the live path looks it up nowhere, so it arrived as
+        a constant in every match. Value agreement was never going to catch that, because
+        the constant is served consistently. The question it could not ask is asked by
+        `TestTheLivePathSuppliesWhatTheModelConsumes` above, and between them the two cover
+        the whole vector.
 
         Whole-vector equality was the first version of this test and it was wrong twice
         over. These rows carry `roshan_kills`, `aegis_holder` and `roshan_respawn_in`, gone
