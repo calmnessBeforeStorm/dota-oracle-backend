@@ -1,9 +1,51 @@
-"""Identifiers for what produced a raw payload.
+"""Identifiers for what produced a raw payload - and the map of where our data comes from.
 
 `raw_matches` is unique on (match_id, source), so these strings decide what overwrites what.
 The list endpoint and the match-detail endpoint of the same provider are deliberately
 separate sources: the summary from /proMatches must not be clobbered by the full match, and
 losing either would mean re-spending quota to get it back.
+
+The four platforms
+==================
+
+Each client module carries its own limits; this is the one place that shows the whole
+picture, because the interesting part is not what each provides but what each *cannot*.
+
+**Valve / Steam Web API** (`clients/steam.py`) - the live channel, and the only free one.
+`GetLiveLeagueGames` is the scoreboard the poller reads every 20-30s: score, net worth,
+buildings, draft-so-far, the broadcast delay. `GetRealtimeStats` needs a `server_steam_id`
+and is therefore only reachable for a game already found. Cannot give history, cannot give
+league *names* (an id and nothing else), and hands out negative team ids to line-ups
+assembled for a single game.
+
+**OpenDota** (`clients/opendota.py`) - the archive and the reference books. `/proMatches`
+walks the history of played matches a hundred at a time; `/matches/{id}` gives one full
+match; `/leagues`, `/proPlayers` and `/constants/heroes` are the reference books, one call
+each for the lot. 50k calls a month, 60 a minute, and the daily allowance is what actually
+stops a run. Its per-minute series is *earned gold*, which is not the quantity the live
+scoreboard reports - which is why it is not what we train on.
+
+**STRATZ** (`clients/stratz.py`) - per-minute series, and since 27.08.2026 the primary
+source of them. Net worth rather than earned gold, so the offline and the live paths
+describe the same thing. Also the draft (`pickBans`) and buildings (`towerDeaths`). On our
+token every list under `playbackData` comes back empty and Roshan events are absent
+entirely; the bulk `matches(ids:)` query needs an admin token, so maps are fetched one at a
+time. The measured ceiling is ~550-650 maps an hour across all consumers, not the ~2000 the
+rate limit suggests.
+
+**Liquipedia** (`clients/liquipedia.py`) - the only authority on what the product is about:
+Tier 1 marking, tournament stages, and the series FORMAT. Valve data cannot tell a Bo2 from
+two Bo1s, so without this there is no Bo2 and no draw. It appears in no `RawSource` below
+because it produces no match payloads - its output lands in `leagues`, `tournament_stages`
+and `league_mappings`. Terms of use are enforced by IP ban: custom User-Agent, ~1 request /
+2s, and CC-BY-SA attribution wherever the data is shown.
+
+What no platform gives us
+-------------------------
+
+A schedule of matches that have not been played yet. Valve and OpenDota both report only
+what has finished or is running, and Liquipedia's schedule is not fetched. That is why the
+tournament calendar has no "upcoming" tab worth the name.
 """
 
 from enum import StrEnum
