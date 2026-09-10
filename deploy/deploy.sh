@@ -80,8 +80,22 @@ docker compose -f "$COMPOSE_FILE" pull
 # Migrations run before the new code serves anything, in a one-shot container off the same
 # image the API will run. `run --rm` and not `exec`, because at this point the new API is not
 # up yet and the old one must not be the thing applying the new schema.
+# `--wait` blocks until both healthchecks pass, and it is doing real work here rather than
+# being cautious. Plain `up -d` returns once the container has *started*, which is not the
+# same as Postgres accepting connections - on a first deploy it still has initdb to do. The
+# migration then opened a socket to a port nothing was listening on yet:
+#
+#     ConnectionRefusedError: [Errno 111] Connect call failed ('172.18.0.3', 5432)
+#
+# The compose file does say `condition: service_healthy`, but `--no-deps` below switches
+# that off, which is exactly what made the race reachable. It stays off deliberately - the
+# migration must not drag the API up with it - so the wait belongs here instead.
 echo "deploy: migrating"
-docker compose -f "$COMPOSE_FILE" up -d postgres redis
+if ! docker compose -f "$COMPOSE_FILE" up -d --wait postgres redis; then
+    echo "deploy: postgres or redis never became healthy" >&2
+    docker compose -f "$COMPOSE_FILE" logs --tail 50 postgres redis
+    exit 1
+fi
 docker compose -f "$COMPOSE_FILE" run --rm --no-deps api alembic upgrade head
 
 echo "deploy: starting"
