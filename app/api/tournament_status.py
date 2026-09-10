@@ -27,12 +27,11 @@ RECENT_MATCH_WINDOW = timedelta(hours=30)
 
 def status_of(
     *,
-    first: datetime | None,
     last: datetime | None,
     now: datetime,
     is_live: bool,
 ) -> str:
-    """One of "current", "upcoming", "past".
+    """Either "current" or "past". There is no third answer.
 
     `is_live` wins over everything: if a game of this league is on air, the tournament has
     started, whatever its dates claim. Dates come from matches we hold, and a match can be
@@ -41,11 +40,20 @@ def status_of(
     With no dates at all the answer is "past" rather than "current". Such a league exists
     only because we hold matches without timestamps, and putting an unknown at the top of
     the calendar is the kind of flattery the accuracy dashboard is written to avoid.
+
+    An "upcoming" branch used to sit here, waiting for a schedule feed. It could never fire:
+    `first` is the earliest match we hold and we hold a match only once it has been played.
+    The feed it was written for does not exist either - Liquipedia keeps tournament lists in
+    LPDB, and access was requested on 2026-09-10 and refused - and underneath that, `League`
+    is keyed on Valve's `league_id`, which an unstarted tournament has not been assigned.
+    A branch that cannot be reached is not a placeholder, it is a claim that the product
+    answers a question it cannot answer, so it is gone rather than pending.
     """
     if is_live:
         return "current"
-    if first and first > now:
-        return "upcoming"
-    if last and now - last <= RECENT_MATCH_WINDOW:
+    # The lower bound is not decoration. A match dated in the future makes `now - last`
+    # negative, which passes any upper bound on its own and would report a tournament as
+    # running on the strength of a bad timestamp.
+    if last and timedelta(0) <= now - last <= RECENT_MATCH_WINDOW:
         return "current"
     return "past"

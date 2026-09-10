@@ -43,7 +43,7 @@ async def _live_league_ids() -> set[int]:
 
 @router.get("", response_model=list[TournamentSummary])
 async def list_tournaments(
-    status: str = Query(default="current", pattern="^(current|upcoming|past|all)$"),
+    status: str = Query(default="current", pattern="^(current|past|all)$"),
     tier: str | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[TournamentSummary]:
@@ -99,7 +99,6 @@ async def list_tournaments(
             maps=maps,
             stages=stages,
             status=status_of(
-                first=first_match,
                 last=last_match,
                 now=now,
                 is_live=league.league_id in live_ids,
@@ -195,7 +194,6 @@ async def tournament_detail(
         maps=maps,
         stages=stages,
         status=status_of(
-            first=first_match,
             last=last_match,
             now=datetime.now(UTC),
             is_live=league_id in await _live_league_ids(),
