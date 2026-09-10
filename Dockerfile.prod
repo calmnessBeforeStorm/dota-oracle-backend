@@ -34,7 +34,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY dota-oracle-backend/pyproject.toml dota-oracle-backend/README.md ./
+COPY dota-oracle-backend/pyproject.toml dota-oracle-backend/README.md dota-oracle-backend/LICENSE ./
 COPY dota-oracle-backend/app ./app
 RUN pip install --upgrade pip && pip install .
 
