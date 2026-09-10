@@ -1,6 +1,21 @@
 # dota-oracle-backend
 
-Оценка вероятности победы в идущих матчах Dota 2 уровня Tier 1 + турнирный календарь.
+**Live win-probability estimation for professional Dota 2 matches.**
+Open-source, non-commercial, no betting or wagering functionality.
+
+Tournament metadata (tier, stage, series format) is sourced from
+[Liquipedia](https://liquipedia.net/dota2) under CC-BY-SA. The service does not
+reproduce Liquipedia's pages or brackets — it links to them.
+
+FastAPI · PostgreSQL 16 · Redis 7 · arq · LightGBM
+
+*Documentation below is in Russian.*
+
+---
+
+Оценка вероятности победы в идущих матчах Dota 2 уровня Tier 1: live-модель пересчитывает
+вероятность каждые 20–30 секунд по состоянию игры, точность видна на публичном дашборде.
+Турнирный контекст (тир, стадия, формат серии) берётся из Liquipedia со ссылкой на источник.
 FastAPI · PostgreSQL 16 · Redis 7 · arq · LightGBM.
 
 Спецификация проекта: [docs/spec.md](docs/spec.md).
@@ -47,6 +62,10 @@ pytest
 ruff check . && ruff format --check .
 mypy app
 ```
+
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE).
 
 ## Атрибуция
 
