@@ -41,11 +41,12 @@ import pytest
 from app.features.adapters import steam
 from app.features.adapters.stratz import snapshot_at
 from app.features.live import (
+    EXCLUDED_PREMATCH,
     FEATURE_ORDER,
-    PREMATCH_FEATURE_NAMES,
     SERVED_FEATURES,
     build_live_features,
 )
+from app.features.prematch_live import LIVE_PREMATCH_FEATURES
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "train_serve_pairs.json"
 
@@ -151,11 +152,20 @@ class TestTheLivePathSuppliesWhatTheModelConsumes:
         If a feature changes between these two states, the live path is not supplying it -
         the builder is, out of its own defaults.
         """
-        as_polled = steam.from_live_league_game(LIVE_LEAGUE_SAMPLE)
+        # Built the way the poller builds it, which now includes the skill half of the
+        # pre-match block, read point-in-time from `player_ratings`.
+        as_polled = steam.from_live_league_game(
+            LIVE_LEAGUE_SAMPLE,
+            prematch=dict.fromkeys(LIVE_PREMATCH_FEATURES, 0.3),
+            prematch_prior=0.61,
+        )
+
+        # Only the block the poller still cannot fill is varied. The skill half and the
+        # prior are left alone precisely because they are supplied now - moving them would
+        # test the builder rather than the live path.
         as_if_known = replace(
             as_polled,
-            prematch=dict.fromkeys(PREMATCH_FEATURE_NAMES, 1.0),
-            prematch_prior=0.75,
+            prematch={**as_polled.prematch, **dict.fromkeys(EXCLUDED_PREMATCH, 1.0)},
         )
 
         polled = build_live_features(as_polled)
@@ -166,6 +176,30 @@ class TestTheLivePathSuppliesWhatTheModelConsumes:
             f"{len(defaulted)} features the model consumes are not supplied by the live "
             f"path and arrive as constants: {defaulted}"
         )
+
+    def test_what_the_poller_cannot_supply_stays_out_of_the_served_set(self) -> None:
+        """The other half of the same rule, stated the other way round.
+
+        The test above passes if a feature is supplied *or* excluded, so on its own it would
+        also pass if someone quietly excluded everything. This one names what is still
+        missing and why, so shrinking the vector to silence a failure is a visible edit.
+        """
+        assert set(EXCLUDED_PREMATCH).isdisjoint(SERVED_FEATURES)
+        # Five cannot be supplied at all - they need the sweep's accumulators. Four are
+        # supplied and excluded anyway, because training on them measured worse: 0.5246
+        # against 0.5276, and the gate failed on 5-9 and 10-14. The distinction is in
+        # `app.features.live`; what this holds is that neither kind leaks into the vector.
+        assert set(EXCLUDED_PREMATCH) == {
+            "form_diff",
+            "h2h_advantage",
+            "draft_advantage",
+            "rest_days_diff",
+            "maps_last_24h_diff",
+            "skill_diff",
+            "skill_sigma_sum",
+            "established_diff",
+            "prematch_prior",
+        }
 
 
 @pytest.fixture(scope="module")

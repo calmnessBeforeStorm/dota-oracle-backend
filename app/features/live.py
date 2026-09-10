@@ -106,7 +106,35 @@ PREMATCH_BLOCK: tuple[str, ...] = (*PREMATCH_FEATURE_NAMES, "prematch_prior")
 #:
 #: Training on a signal the serving path cannot supply is train/serve skew whatever the
 #: number substituted, so a model is trained on this set until the poller supplies the rest.
-SERVED_FEATURES: tuple[str, ...] = tuple(n for n in FEATURE_ORDER if n not in PREMATCH_BLOCK)
+#:
+#: Kept out of the vector, for two different reasons that must not be confused.
+#:
+#: Five of them cannot be supplied at all: `form_diff`, `h2h_advantage`, `draft_advantage`,
+#: `rest_days_diff` and `maps_last_24h_diff` need the sweep's accumulators, which replay the
+#: whole archive in order and cannot be rebuilt on a 20-second tick.
+#:
+#: The other four *are* supplied now - the poller reads them point-in-time from
+#: `player_ratings` (see `app.features.prematch_live`) - and are excluded anyway, because
+#: training on them measured worse. Same data, same split, 10.09.2026:
+#:
+#:     19 features   log loss 0.5246   ECE 0.0274   gate passed, 1 tie
+#:     23 features   log loss 0.5276   ECE 0.0291   gate FAILED on 5-9 and 10-14
+#:
+#: It lost in the early minutes, which is exactly where a prior should help most, so the
+#: skill block is not carrying the signal it appears to. Supplying them anyway is still
+#: worth it: they land in `predictions.features`, so the next attempt argues from recorded
+#: values instead of a fresh guess.
+EXCLUDED_PREMATCH: tuple[str, ...] = PREMATCH_BLOCK
+
+#: What the poller fills but the model does not read. Zero would mean the two lists agree.
+SUPPLIED_BUT_UNUSED: tuple[str, ...] = (
+    "skill_diff",
+    "skill_sigma_sum",
+    "established_diff",
+    "prematch_prior",
+)
+
+SERVED_FEATURES: tuple[str, ...] = tuple(n for n in FEATURE_ORDER if n not in EXCLUDED_PREMATCH)
 
 
 #: Softens the division near minute zero, where the raw ratio would explode.

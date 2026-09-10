@@ -119,11 +119,22 @@ def has_scoreboard(game: Mapping[str, Any]) -> bool:
     return bool(scoreboard.get("radiant")) and bool(scoreboard.get("dire"))
 
 
+def account_ids(game: dict[str, Any], side: str) -> list[int]:
+    """Account ids for one side of a live scoreboard, in board order.
+
+    Zeroes are dropped rather than kept as players: an anonymous account is Valve declining
+    to say who this is, which is not an identity to look a rating up by.
+    """
+    board = ((game.get("scoreboard") or {}).get(side) or {}).get("players", []) or []
+    return [int(p.get("account_id") or 0) for p in board if int(p.get("account_id") or 0) > 0]
+
+
 def from_live_league_game(
     game: dict[str, Any],
     series: SeriesContext | None = None,
     prematch_prior: float | None = None,
     is_lan: bool | None = None,
+    prematch: Mapping[str, float] | None = None,
 ) -> GameState:
     """Build a GameState from one GetLiveLeagueGames entry - the primary live channel.
 
@@ -172,6 +183,7 @@ def from_live_league_game(
         radiant_picks=tuple(int(h) for h in radiant_side.get("picks_hero_ids", ()) or ()),
         dire_picks=tuple(int(h) for h in dire_side.get("picks_hero_ids", ()) or ()),
         series=series or SeriesContext(),
+        prematch=prematch or {},
         prematch_prior=prematch_prior,
         # Not in the payload: it comes from `leagues`, which the caller has already resolved.
         # None means the league is unmapped, and the vector says so rather than guessing

@@ -32,9 +32,10 @@ from app.db.models.reference import League, TournamentStage
 from app.db.models.training import Prediction
 from app.db.session import get_session_factory
 from app.domain.series import is_conditional_game
-from app.features.adapters.steam import from_live_league_game, has_scoreboard
+from app.features.adapters.steam import account_ids, from_live_league_game, has_scoreboard
 from app.features.game_state import SeriesContext
 from app.features.live import build_live_features
+from app.features.prematch_live import live_prematch
 from app.ingestion.clients.steam import SteamClient
 from app.ingestion.repository import utcnow
 from app.ingestion.sources import RawSource
@@ -306,7 +307,23 @@ async def poll_live_games(ctx: dict[str, Any]) -> int:
             series = _series_context(game, fmt)
 
             try:
-                state = from_live_league_game(game, series=series, is_lan=is_lan)
+                # The skill half of the pre-match block, read point-in-time from stored
+                # ratings. Without it every one of these features reached the model as a
+                # constant while training had seen real values - `prematch_prior` as 0.5,
+                # a number absent from all 242 295 training rows.
+                prematch, prior = await live_prematch(
+                    session,
+                    radiant_accounts=account_ids(game, "radiant"),
+                    dire_accounts=account_ids(game, "dire"),
+                    at=captured_at,
+                )
+                state = from_live_league_game(
+                    game,
+                    series=series,
+                    is_lan=is_lan,
+                    prematch=prematch,
+                    prematch_prior=prior,
+                )
                 features = build_live_features(state)
                 p_radiant = predictor.predict_proba_radiant(features)
             except Exception as exc:
