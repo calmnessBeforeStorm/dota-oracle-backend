@@ -57,6 +57,13 @@ class LiveMatch(BaseModel):
     model_version: str
     minute: int = 0
     tier: str = "unknown"
+    team_history: int = Field(
+        default=0,
+        description=(
+            "Matches we hold for the less-experienced of the two teams. Orders the feed "
+            "where the tier cannot: almost every live league is unmarked."
+        ),
+    )
     series: SeriesBrief
     stream_delay_s: int = Field(
         default=0,

@@ -19,13 +19,14 @@ from datetime import UTC, datetime
 from typing import Any
 
 import orjson
-from sqlalchemy import select
+from sqlalchemy import func, select, union_all
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.core.redis import get_redis, publish_prediction
 from app.db.models.enums import SeriesFormat
+from app.db.models.matches import Match
 from app.db.models.raw import RawLiveSnapshot
 from app.db.models.reference import League, TournamentStage
 from app.db.models.training import Prediction
@@ -130,6 +131,7 @@ def _feed_entry(
     tier: str,
     series: SeriesContext,
     series_format_known: bool,
+    team_history: int,
 ) -> dict[str, Any]:
     scoreboard = game.get("scoreboard") or {}
     radiant = game.get("radiant_team") or {}
@@ -139,6 +141,8 @@ def _feed_entry(
         "league_id": int(game.get("league_id", 0) or 0),
         "league_name": league_name,
         "tier": tier,
+        # Orders the feed where the tier cannot: almost every live league is unmarked.
+        "team_history": team_history,
         "radiant": {
             "team_id": radiant.get("team_id"),
             "name": radiant.get("team_name"),
@@ -170,6 +174,57 @@ def _feed_entry(
         # as spoiling the match (spec section 7.4).
         "stream_delay_s": int(game.get("stream_delay_s", 0) or 0),
     }
+
+
+def side_team_id(game: dict[str, Any], side: str) -> int:
+    """Team id for one side, 0 when Valve gives none."""
+    return int((game.get(side) or {}).get("team_id") or 0)
+
+
+def notability(*, radiant_matches: int | None, dire_matches: int | None) -> int:
+    """How much professional history stands behind this game.
+
+    The feed is whatever Valve reports, and the tier that would order it is unknown for
+    almost all of it: measured 10.09.2026, 35 live games across 25 leagues, every one
+    `unknown`. Match counts separate them where the markup cannot - median of this measure
+    over the previous 60 days was 78 for tier1 and 5 for unmarked leagues - and it finds
+    what the markup missed, such as Destiny League at 1018 while its neighbours sat at 1.
+
+    The *smaller* of the two counts, not the average: a veteran roster against a stack
+    playing its first game is not a professional match, and the mean would call it one. A
+    team we hold nothing for scores zero rather than being skipped - no history is itself a
+    fact about the game.
+    """
+    return min(radiant_matches or 0, dire_matches or 0)
+
+
+def sort_feed(feed: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Most professional first, ties left in the order Valve gave them.
+
+    `sorted` is stable, which matters here: the feed is rebuilt every 20-30 seconds, and
+    reshuffling equal rows would make the page twitch for no reason.
+    """
+    return sorted(feed, key=lambda entry: entry.get("team_history", 0), reverse=True)
+
+
+async def _team_history(session: AsyncSession, team_ids: set[int]) -> dict[int, int]:
+    """Matches we hold for each team.
+
+    Ad-hoc line-ups carry negative ids from Valve and have no history by construction, so
+    they are not worth a lookup.
+    """
+    wanted = {team_id for team_id in team_ids if team_id > 0}
+    if not wanted:
+        return {}
+
+    sides = union_all(
+        select(Match.radiant_team_id.label("team_id")).where(Match.radiant_team_id.in_(wanted)),
+        select(Match.dire_team_id.label("team_id")).where(Match.dire_team_id.in_(wanted)),
+    ).subquery()
+    rows = await session.execute(
+        select(sides.c.team_id, func.count().label("played")).group_by(sides.c.team_id)
+    )
+    return {int(team_id): int(played) for team_id, played in rows.all()}
 
 
 async def _register_unseen_leagues(session: AsyncSession, league_ids: set[int]) -> int:
@@ -213,6 +268,11 @@ async def poll_live_games(ctx: dict[str, Any]) -> int:
         league_ids = {int(g.get("league_id", 0) or 0) for g in games if g.get("league_id")}
         discovered = await _register_unseen_leagues(session, league_ids)
         contexts = await _league_context(session, league_ids)
+        # One lookup for the whole tick rather than two per game.
+        team_ids = {
+            side_team_id(game, side) for game in games for side in ("radiant_team", "dire_team")
+        }
+        history = await _team_history(session, team_ids)
 
         for game in games:
             match_id = int(game.get("match_id", 0) or 0)
@@ -273,6 +333,10 @@ async def poll_live_games(ctx: dict[str, Any]) -> int:
                 tier,
                 series,
                 series_format_known=fmt is not None,
+                team_history=notability(
+                    radiant_matches=history.get(side_team_id(game, "radiant_team")),
+                    dire_matches=history.get(side_team_id(game, "dire_team")),
+                ),
             )
             feed.append(entry)
             await publish_prediction(match_id, orjson.dumps(entry).decode())
@@ -280,7 +344,7 @@ async def poll_live_games(ctx: dict[str, Any]) -> int:
         await session.commit()
 
     redis = get_redis()
-    await redis.set(LIVE_FEED_KEY, orjson.dumps(feed).decode(), ex=LIVE_FEED_TTL)
+    await redis.set(LIVE_FEED_KEY, orjson.dumps(sort_feed(feed)).decode(), ex=LIVE_FEED_TTL)
 
     log.info(
         "live_poll.tick",

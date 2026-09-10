@@ -85,6 +85,7 @@ class TestFeedEntry:
             tier="tier1",
             series=_series_context(game, fmt),
             series_format_known=known,
+            team_history=0,
         )
 
     def test_known_format_is_reported(self) -> None:

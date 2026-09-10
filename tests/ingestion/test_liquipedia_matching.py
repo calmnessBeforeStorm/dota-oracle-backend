@@ -5,13 +5,14 @@ mostly about what must NOT be matched: a different edition of the same series, a
 that are not tournaments at all.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models.enums import LeagueTier
+from app.db.models.matches import Match
 from app.db.models.reference import League, LeagueMapping, TournamentStage
 from app.ingestion.liquipedia.matching import (
     AUTO_ACCEPT_SCORE,
@@ -165,6 +166,83 @@ async def seed_league(session: AsyncSession, league_id: int, name: str) -> None:
     now = datetime.now(UTC)
     session.add(League(league_id=league_id, name=name, created_at=now, updated_at=now))
     await session.commit()
+
+
+async def seed_match(
+    session: AsyncSession, *, match_id: int, league_id: int, days_ago: int
+) -> None:
+    now = datetime.now(UTC)
+    session.add(
+        Match(
+            match_id=match_id,
+            league_id=league_id,
+            start_time=now - timedelta(days=days_ago),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    await session.commit()
+
+
+class TestActiveOnly:
+    """Which leagues are worth spending Liquipedia's rate limit on.
+
+    `--limit N` used to take the first N leagues by `league_id`, which is oldest first. The
+    league table holds 10 176 rows because `/leagues` returns Valve's whole history, so a
+    limited run spent its whole budget on tournaments that finished years ago and never
+    reached the ones being played today. At ~1 request per 2 s that is hours of somebody
+    else's rate limit for nothing.
+    """
+
+    async def test_skips_leagues_with_no_recent_matches(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await seed_league(session, 1, "DreamLeague Season 29")
+        await seed_league(session, 2, "Ancient Cup 2019")
+        await seed_match(session, match_id=10, league_id=1, days_ago=2)
+        await seed_match(session, match_id=11, league_id=2, days_ago=900)
+        client = FakeLiquipedia(
+            {"DreamLeague Season 29": ["DreamLeague/29"]}, {"DreamLeague/29": TIER1}
+        )
+
+        proposals = await propose_mappings(client, sessionmaker, active_days=60)
+
+        assert [p.league_id for p in proposals] == [1]
+
+    async def test_busiest_league_goes_first(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # The budget runs out mid-list, so the order decides what gets marked up. A league
+        # playing forty maps this week matters more than one that played a single map.
+        await seed_league(session, 1, "Quiet Cup")
+        await seed_league(session, 2, "DreamLeague Season 29")
+        await seed_match(session, match_id=10, league_id=1, days_ago=1)
+        for match_id in (20, 21, 22):
+            await seed_match(session, match_id=match_id, league_id=2, days_ago=1)
+        client = FakeLiquipedia(
+            {
+                "DreamLeague Season 29": ["DreamLeague/29"],
+                "Quiet Cup": ["Quiet Cup"],
+            },
+            {"DreamLeague/29": TIER1},
+        )
+
+        proposals = await propose_mappings(client, sessionmaker, active_days=60, limit=1)
+
+        assert [p.league_id for p in proposals] == [2]
+
+    async def test_without_the_window_nothing_is_filtered(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # The old behaviour stays reachable: a full pass over everything unmapped.
+        await seed_league(session, 1, "DreamLeague Season 29")
+        client = FakeLiquipedia(
+            {"DreamLeague Season 29": ["DreamLeague/29"]}, {"DreamLeague/29": TIER1}
+        )
+
+        proposals = await propose_mappings(client, sessionmaker)
+
+        assert [p.league_id for p in proposals] == [1]
 
 
 class TestSync:
