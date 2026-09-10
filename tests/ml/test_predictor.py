@@ -211,3 +211,21 @@ class TestTheBoosterDecidesItsOwnFeatureSet:
         served = LightGBMPredictor(path, "test-served", PlattCalibrator(a=1.0, b=0.0))
 
         assert tuple(served.feature_order) == tuple(SERVED_FEATURES)
+
+    def test_a_card_that_disagrees_with_its_booster_is_refused(self, tmp_path) -> None:
+        """The card is the only record of what was measured; the booster is what answers.
+
+        If they describe different feature sets they are not the same model, and serving
+        one while reporting the other is defect 15 again - two models under one version
+        string, which is worse than either of them alone.
+        """
+        from app.features.live import FEATURE_ORDER, SERVED_FEATURES
+        from app.ml.calibration import PlattCalibrator
+        from app.ml.predictor import LightGBMPredictor
+
+        path = self._booster_on(SERVED_FEATURES, tmp_path)
+
+        with pytest.raises(ValueError, match="feature"):
+            LightGBMPredictor(
+                path, "test-mismatch", PlattCalibrator(a=1.0, b=0.0), expected=FEATURE_ORDER
+            )
