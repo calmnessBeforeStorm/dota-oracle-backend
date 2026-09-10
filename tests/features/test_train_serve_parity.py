@@ -32,6 +32,7 @@ rather than in production three weeks later.
 
 import json
 import statistics
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +40,11 @@ import pytest
 
 from app.features.adapters import steam
 from app.features.adapters.stratz import snapshot_at
-from app.features.live import FEATURE_ORDER, build_live_features
+from app.features.live import (
+    FEATURE_ORDER,
+    PREMATCH_FEATURE_NAMES,
+    build_live_features,
+)
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "train_serve_pairs.json"
 
@@ -99,6 +104,67 @@ def test_steam_adapter_counts_only_living_buildings() -> None:
     assert state.radiant.tower_count == 2
     assert state.dire.tower_count == 0  # its only tower is destroyed
     assert state.dire.barracks_count == 1
+
+
+
+#: Shaped after a real GetLiveLeagueGames entry - the payload the poller actually receives.
+LIVE_LEAGUE_SAMPLE: dict[str, Any] = {
+    "match_id": 7000000002,
+    "scoreboard": {
+        "duration": 1230.0,
+        "radiant": {
+            "score": 12,
+            "tower_state": 1926,
+            "barracks_state": 51,
+            "players": [{"net_worth": 14000}, {"net_worth": 12000}, {"net_worth": 10000}],
+        },
+        "dire": {
+            "score": 7,
+            "tower_state": 2047,
+            "barracks_state": 63,
+            "players": [{"net_worth": 11000}, {"net_worth": 9000}, {"net_worth": 8000}],
+        },
+    },
+}
+
+
+class TestTheLivePathSuppliesWhatTheModelConsumes:
+    """The half of parity the fixture cannot see (spec section 6.4).
+
+    `TestParity` below asks whether two sources that both read a payload agree on the
+    numbers. This asks something prior: whether the live path reads the number at all.
+    A feature the poller never fills still arrives at the model - as the builder's default,
+    identical in every match - and that is invisible to any comparison of served rows
+    against each other, because the constant is served consistently.
+
+    Measured 10.09.2026, this is how nine features reached production frozen: the poller
+    calls `from_live_league_game` without `prematch` or `prematch_prior`, so the pre-match
+    block defaulted to 0.0 and the prior to 0.5 in every live match, while training saw
+    real values spanning 0.130-0.889. The model was trained on a signal that does not exist
+    at serving time.
+    """
+
+    def test_no_model_feature_falls_back_to_a_default(self) -> None:
+        """Vary only what the poller leaves out; nothing the model reads may move.
+
+        If a feature changes between these two states, the live path is not supplying it -
+        the builder is, out of its own defaults.
+        """
+        as_polled = steam.from_live_league_game(LIVE_LEAGUE_SAMPLE)
+        as_if_known = replace(
+            as_polled,
+            prematch={name: 1.0 for name in PREMATCH_FEATURE_NAMES},
+            prematch_prior=0.75,
+        )
+
+        polled = build_live_features(as_polled)
+        known = build_live_features(as_if_known)
+        defaulted = sorted(name for name in FEATURE_ORDER if polled[name] != known[name])
+
+        assert not defaulted, (
+            f"{len(defaulted)} features the model consumes are not supplied by the live "
+            f"path and arrive as constants: {defaulted}"
+        )
 
 
 @pytest.fixture(scope="module")
