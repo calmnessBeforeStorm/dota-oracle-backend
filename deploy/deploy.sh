@@ -74,6 +74,27 @@ case $# in
     *) fail "expected either no arguments or both tags: ./deploy.sh <api-sha> <spa-sha>" ;;
 esac
 
+# Is this script the one on main?
+#
+# The compose file and this script are copies: nothing updates them when images do. That
+# gap has already cost one debugging session - the server kept running an older deploy.sh,
+# so a fix that had been merged, published and pulled simply did not take effect, and the
+# output looked like the fix had not worked.
+#
+# A warning, not a refusal: the network may be unavailable and a deploy must still be
+# possible. It is printed at the start, where it is read, rather than buried at the end.
+RAW=https://raw.githubusercontent.com/calmnessBeforeStorm/dota-oracle-backend/main
+check_self() {
+    remote=$(curl -fsS --max-time 10 "$RAW/deploy/$(basename "$0")" 2>/dev/null) || return 0
+    [ -n "$remote" ] || return 0
+    if [ "$remote" != "$(cat "$0")" ]; then
+        echo "deploy: WARNING - this script differs from main. Update both copies:" >&2
+        echo "        curl -fsSL -o deploy.sh $RAW/deploy/deploy.sh && chmod +x deploy.sh" >&2
+        echo "        curl -fsSL -o docker-compose.prod.yml $RAW/docker-compose.prod.yml" >&2
+    fi
+}
+check_self
+
 echo "deploy: pulling"
 docker compose -f "$COMPOSE_FILE" pull
 
