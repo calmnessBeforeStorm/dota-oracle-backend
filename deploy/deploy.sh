@@ -136,6 +136,33 @@ if [ "${api_up:-no}" != "yes" ]; then
     exit 1
 fi
 
+# What the API is actually serving, which is not the same question as "did it start".
+#
+# The check above only proves the process answers. A model that fails to load is caught and
+# the baseline is served in its place, deliberately, so the site keeps working - and that is
+# what makes it dangerous: production ran a two-feature logistic regression under the
+# trained model's name, and nothing in the deploy said so. The files being present on the
+# host was checked; that the container could load them was not.
+if [ -n "$active" ]; then
+    # Cut on quotes rather than a capture group: nothing to escape, and the value is
+    # always the fourth field of "model_version": "...".
+    serving=$(docker compose -f "$COMPOSE_FILE" exec -T api curl -sf http://127.0.0.1:8000/api/model/metrics 2>/dev/null | grep -o '"model_version": *"[^"]*"' | head -1 | cut -d'"' -f4)
+    if [ -z "$serving" ]; then
+        echo "deploy: could not read the served model version from the API" >&2
+        echo "        Unverified is not the same as fine - the fallback is silent by design." >&2
+        docker compose -f "$COMPOSE_FILE" logs api --tail 40 | grep -iE 'model\.' >&2 || true
+        exit 1
+    fi
+
+    if [ "$serving" != "$active" ]; then
+        echo "deploy: the API is serving '$serving', not '$active'" >&2
+        echo "        The model did not load. Why is in the startup log:" >&2
+        docker compose -f "$COMPOSE_FILE" logs api --tail 40 | grep -iE 'model\.' >&2 || true
+        exit 1
+    fi
+    echo "deploy: serving $serving"
+fi
+
 # The public path: DNS, Caddy, the certificate. Its failures are not the API's, and on a
 # first deploy the usual one is the orange cloud in Cloudflare - behind it the ACME challenge
 # never reaches Caddy and no certificate is issued.

@@ -56,7 +56,9 @@ services:
       POSTGRES_PORT: 5432
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      ENV: production
+      # APP_ENV, not ENV: the setting is `app_env`, so `ENV` was read by nobody and the
+      # service reported "env": "local" while running in production.
+      APP_ENV: production
     volumes:
       # Trained boosters are not in the image - they come out of a run somebody watched, not
       # out of a build - so both services that answer with a model mount them from the host.
@@ -79,7 +81,9 @@ services:
       POSTGRES_PORT: 5432
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      ENV: production
+      # APP_ENV, not ENV: the setting is `app_env`, so `ENV` was read by nobody and the
+      # service reported "env": "local" while running in production.
+      APP_ENV: production
     volumes:
       - ./models:/app/models:ro
     command: arq app.workers.settings.WorkerSettings

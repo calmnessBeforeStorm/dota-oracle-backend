@@ -39,9 +39,21 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# curl is here for the healthcheck and nothing else.
+# curl for the healthcheck, libgomp1 for LightGBM.
+#
+# libgomp1 is the OpenMP runtime that LightGBM links against. It arrives in the build
+# stage as a dependency of build-essential and does not survive the copy into this one,
+# so the image imported everything except the thing it exists to serve:
+#
+#     model.load_failed: libgomp.so.1: cannot open shared object file
+#     model.baseline_fallback
+#
+# The service keeps answering, on the baseline, which is exactly the danger: the site
+# looked healthy while serving a two-feature logistic regression under the trained
+# model's name. This is the second serving image in this project unable to load a
+# booster - the first had lightgbm itself in an optional extra.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 app
 
