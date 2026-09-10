@@ -6,14 +6,18 @@ Any page rendering Liquipedia-derived data must carry visible CC-BY-SA attributi
 
 from datetime import UTC, datetime
 
+import orjson
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.tournament import participants_from, series_for
+from app.api.tournament_status import status_of
+from app.core.redis import get_redis
 from app.db.models.matches import Match, Series
 from app.db.models.reference import League, TournamentStage
 from app.db.session import get_session
+from app.ingestion.workers.live_poller import LIVE_FEED_KEY
 from app.schemas.common import (
     TournamentDetail,
     TournamentStageInfo,
@@ -23,12 +27,18 @@ from app.schemas.common import (
 router = APIRouter(prefix="/tournaments", tags=["tournaments"])
 
 
-def _status_of(start: datetime | None, end: datetime | None, now: datetime) -> str:
-    if start and start > now:
-        return "upcoming"
-    if end and end < now:
-        return "past"
-    return "current"
+async def _live_league_ids() -> set[int]:
+    """Leagues with a game on air right now, from the feed the poller writes.
+
+    Read from the same cache `/matches/live` serves, so the calendar and the live feed can
+    never disagree about what is running. An empty or expired cache means "nothing is on
+    air", which is exactly what it means on the live feed too: the fallback to a recent
+    match is what keeps a stopped poller from emptying the tab.
+    """
+    cached = await get_redis().get(LIVE_FEED_KEY)
+    if not cached:
+        return set()
+    return {int(entry["league_id"]) for entry in orjson.loads(cached) if entry.get("league_id")}
 
 
 @router.get("", response_model=list[TournamentSummary])
@@ -73,6 +83,7 @@ async def list_tournaments(
         statement = statement.where(League.tier == tier)
 
     now = datetime.now(UTC)
+    live_ids = await _live_league_ids()
     rows = (await session.execute(statement)).all()
 
     tournaments = [
@@ -87,7 +98,12 @@ async def list_tournaments(
             last_match=last_match,
             maps=maps,
             stages=stages,
-            status=_status_of(first_match, last_match, now),
+            status=status_of(
+                first=first_match,
+                last=last_match,
+                now=now,
+                is_live=league.league_id in live_ids,
+            ),
         )
         for league, _, first_match, last_match, maps, stages in rows
     ]
@@ -178,7 +194,12 @@ async def tournament_detail(
         last_match=last_match,
         maps=maps,
         stages=stages,
-        status=_status_of(first_match, last_match, datetime.now(UTC)),
+        status=status_of(
+            first=first_match,
+            last=last_match,
+            now=datetime.now(UTC),
+            is_live=league_id in await _live_league_ids(),
+        ),
         series_total=series_total,
         series_drawn=drawn,
         series_without_format=undecided,
