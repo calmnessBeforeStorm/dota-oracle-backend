@@ -1,7 +1,7 @@
 """F1/F2: live feed and match card (spec section 8.1)."""
 
 import orjson
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,13 +16,21 @@ from app.api.live_card import (
     stream_delay_seconds,
     teams_from,
 )
+from app.api.recent import recent_matches
 from app.core.redis import get_redis
 from app.db.models.matches import Match, Series
 from app.db.models.reference import Team
 from app.db.models.training import Prediction
 from app.db.session import get_session
 from app.ingestion.workers.live_poller import LIVE_FEED_KEY
-from app.schemas.common import LiveMatch, MatchDetail, PredictionPoint, SeriesBrief, TeamBrief
+from app.schemas.common import (
+    LiveMatch,
+    MatchDetail,
+    PredictionPoint,
+    RecentMatch,
+    SeriesBrief,
+    TeamBrief,
+)
 
 router = APIRouter(prefix="/matches", tags=["matches"])
 
@@ -42,6 +50,18 @@ async def live_matches(tier: str | None = None) -> list[LiveMatch]:
     if tier:
         entries = [entry for entry in entries if entry.get("tier") == tier]
     return [LiveMatch.model_validate(entry) for entry in entries]
+
+
+@router.get("/recent", response_model=list[RecentMatch])
+async def recent(
+    limit: int = Query(default=20, ge=1, le=50),
+    session: AsyncSession = Depends(get_session),
+) -> list[RecentMatch]:
+    """Matches we predicted and then saw finish, newest first.
+
+    Declared above `/{match_id}`, or `recent` is swallowed by it as a match id.
+    """
+    return await recent_matches(session, limit=limit)
 
 
 @router.get("/{match_id}", response_model=MatchDetail)
