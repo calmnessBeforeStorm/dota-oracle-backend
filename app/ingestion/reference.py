@@ -150,8 +150,11 @@ async def refresh_league_names(client: LeagueSource, session_factory: Any) -> in
     id and no name for good: Valve's scoreboard does not carry one, and `/proMatches` only
     covers leagues whose matches reach that endpoint.
 
-    Names only, and only where the row already exists or arrives new - the tier, prize pool
-    and Liquipedia slug are owned by `map-leagues` and left untouched.
+    Names only. The tier, Liquipedia slug, prize pool and dates belong to `map-leagues`,
+    which writes exactly those columns and never `name` - so refreshing the name here cannot
+    undo hand-checked classification work. Both writers of `name` (this pass and the
+    `/proMatches` summaries) read the same provider, so the newer answer simply wins, which
+    is what a league that has been renamed needs.
     """
     rows = parse_leagues(await client.leagues())
     async with session_factory() as session:

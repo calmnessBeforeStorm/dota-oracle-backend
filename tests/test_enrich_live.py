@@ -195,6 +195,21 @@ class TestLeagueNames:
         tier = await session.scalar(select(League.tier).where(League.league_id == 17599))
         assert tier == "tier1"
 
+    async def test_does_not_disturb_liquipedia_columns(self, session: AsyncSession) -> None:
+        # The classification is hand-checked work; only `name` may be refreshed here.
+        session.add(
+            League(league_id=17599, tier="tier1", liquipedia_slug="Ultras/2025-26", is_lan=True)
+        )
+        await session.flush()
+        await refresh_league_names(_FakeLeagues(), lambda: _Once(session))
+        league = (
+            await session.execute(select(League).where(League.league_id == 17599))
+        ).scalar_one()
+        assert league.name == "Ultras Dota Pro League 2025-26"
+        assert league.tier == "tier1"
+        assert league.liquipedia_slug == "Ultras/2025-26"
+        assert league.is_lan is True
+
     async def test_skips_a_league_with_no_name(self, session: AsyncSession) -> None:
         written = await refresh_league_names(_FakeLeagues(nameless=True), lambda: _Once(session))
         assert written == 0
