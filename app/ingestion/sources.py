@@ -43,9 +43,20 @@ and `league_mappings`. Terms of use are enforced by IP ban: custom User-Agent, ~
 What no platform gives us
 -------------------------
 
-A schedule of matches that have not been played yet. Valve and OpenDota both report only
-what has finished or is running, and Liquipedia's schedule is not fetched. That is why the
-tournament calendar has no "upcoming" tab worth the name.
+A schedule of matches that have not been played yet, and this is a wall rather than a gap.
+Valve and OpenDota report only what has finished or is running. STRATZ is the same. Only
+Liquipedia knows a schedule, and it keeps its tournament lists in LPDB, generated: they are
+absent from page wikitext and exist solely inside rendered markup. An LPDB key was requested
+on 2026-09-10 and refused - Liquipedia does not grant API access to projects that predict
+match outcomes, which it files alongside betting regardless of monetisation.
+
+Underneath the sources there is a schema wall too: `League` is keyed on Valve's `league_id`,
+and a tournament that has not started has not been assigned one, so we learn a league exists
+only once one of its matches has been played.
+
+That is why the tournament calendar offers "current" and "past" only, why the tournament
+page has no bracket, and why the calendar links to Liquipedia for a schedule instead of
+reproducing one.
 """
 
 from enum import StrEnum
