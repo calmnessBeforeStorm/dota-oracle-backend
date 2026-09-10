@@ -16,7 +16,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.logging import get_logger
-from app.db.models.reference import Hero, Player
+from app.db.models.reference import Hero, League, Player
 from app.ingestion.repository import utcnow
 
 log = get_logger(__name__)
@@ -30,10 +30,15 @@ class ProPlayerSource(Protocol):
     async def pro_players(self) -> list[dict[str, Any]]: ...
 
 
+class LeagueSource(Protocol):
+    async def leagues(self) -> list[dict[str, Any]]: ...
+
+
 @dataclass
 class ReferenceReport:
     heroes: int = 0
     players: int = 0
+    leagues: int = 0
 
 
 def parse_heroes(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -121,4 +126,39 @@ async def refresh_pro_players(
         written = await _upsert(session, Player, rows, "account_id")
         await session.commit()
     log.info("reference.pro_players", written=written)
+    return written
+
+
+def parse_leagues(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`/leagues` gives an id and a name for every league OpenDota knows.
+
+    Only the name is taken. `tier` on this endpoint is Valve's own label, which is not the
+    Tier 1 classification the product means (spec section 3) - that one is decided against
+    Liquipedia by `map-leagues`, and overwriting it here would undo hand-checked work.
+    """
+    return [
+        {"league_id": int(row["leagueid"]), "name": name}
+        for row in payload
+        if row.get("leagueid") and (name := row.get("name"))
+    ]
+
+
+async def refresh_league_names(client: LeagueSource, session_factory: Any) -> int:
+    """Fill in league names from the one call that carries all of them.
+
+    Nothing was calling `/leagues` at all, so a league first seen by the live poller had an
+    id and no name for good: Valve's scoreboard does not carry one, and `/proMatches` only
+    covers leagues whose matches reach that endpoint.
+
+    Names only. The tier, Liquipedia slug, prize pool and dates belong to `map-leagues`,
+    which writes exactly those columns and never `name` - so refreshing the name here cannot
+    undo hand-checked classification work. Both writers of `name` (this pass and the
+    `/proMatches` summaries) read the same provider, so the newer answer simply wins, which
+    is what a league that has been renamed needs.
+    """
+    rows = parse_leagues(await client.leagues())
+    async with session_factory() as session:
+        written = await _upsert(session, League, rows, "league_id")
+        await session.commit()
+    log.info("reference.leagues", written=written)
     return written

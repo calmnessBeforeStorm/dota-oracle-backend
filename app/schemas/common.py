@@ -336,3 +336,32 @@ class TournamentDetail(TournamentSummary):
     series_without_format: int = 0
     participants: list[TournamentParticipant] = []
     results: list[SeriesResult] = []
+
+
+class RecentMatch(BaseModel):
+    """A finished match in the home screen's feed.
+
+    The population is matches the live loop saw, not the whole archive: only a match we
+    managed to predict lands here. The page says so plainly - otherwise the feed reads as a
+    full calendar, which it is not.
+    """
+
+    match_id: int
+    league_id: int | None = None
+    league_name: str | None = None
+    tier: str = "unknown"
+    radiant: TeamBrief
+    dire: TeamBrief
+    radiant_win: bool
+    #: Absolute time, never relative: the worker can sit idle for days, and "yesterday" lies
+    #: at that point, while a date merely looks old, which it is.
+    started_at: datetime | None = None
+    series: SeriesBrief
+    curve: list[PredictionPoint] = []
+    #: Radiant's probability at minute ten, when there is one. None renders as a dash: a
+    #: neighbouring minute under this caption would be a substitution nobody could spot.
+    p_at_ten: float | None = None
+    #: The version that served *that* minute-ten point, not "the match's version": a live
+    #: match can be predicted by two versions in a row, and they have none in common. Empty
+    #: string when there is no minute ten.
+    model_version: str

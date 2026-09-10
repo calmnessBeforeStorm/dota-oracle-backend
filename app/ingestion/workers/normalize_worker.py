@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.logging import get_logger
 from app.db.session import get_session_factory
+from app.ingestion.enrich_live import enrich_from_snapshots
 from app.ingestion.normalize import normalize_match_details, normalize_pro_matches
 
 log = get_logger(__name__)
@@ -56,12 +57,22 @@ async def run_normalize(session_factory: async_sessionmaker[AsyncSession]) -> in
     summaries = await normalize_pro_matches(session_factory)
     details = await normalize_match_details(session_factory)
 
+    # Last, and only into gaps: whatever the summaries knew has already been written, so
+    # this pass fills in the matches they never covered. `/proMatches` carried 13 of the
+    # 448 maps we had predicted and scored - for the rest the poller's own snapshot is the
+    # only record of who played and in which league.
+    async with session_factory() as session:
+        enriched = await enrich_from_snapshots(session)
+        await session.commit()
+
     log.info(
         "normalize.done",
         matches=summaries.matches,
         series=summaries.series,
         detail_payloads=details.raw_seen,
         players=details.match_players,
+        enriched_teams=enriched.teams,
+        enriched_matches=enriched.matches,
     )
     return summaries.matches
 
