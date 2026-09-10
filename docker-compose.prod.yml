@@ -111,6 +111,12 @@ services:
     # from a laptop is what the SSH tunnel is for.
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Docker gives a container 64 MB of /dev/shm - measured, not assumed - and that is where
+    # Postgres puts the dynamic shared memory a parallel query needs. shared_buffers is not
+    # affected (it is anonymous mmap), but a parallel aggregate over the snapshot table is:
+    # 400k rows today, ~2.6M once the detail backfill finishes. The failure mode is
+    # "could not resize shared memory segment", mid-query, under load.
+    shm_size: 512m
     # Tuned for the 8 GB box. The stock 128 MB of shared_buffers assumes a far smaller
     # machine, and it shows here: the snapshot table is ~400k rows today and heads for 2.6M
     # once the detail backfill finishes, so every aggregate would go to disk.
