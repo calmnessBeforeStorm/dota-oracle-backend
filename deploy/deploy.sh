@@ -4,6 +4,9 @@
 #     ./deploy.sh                       # whatever .env says, normally main for both
 #     ./deploy.sh <api-sha> <spa-sha>   # roll back to one exact pair
 #
+# Every successful deploy appends its pair to deployed.log, which is where the two SHAs for
+# a rollback come from.
+#
 # Images are built by GitHub Actions on push to `main` and pulled from ghcr; nothing is built
 # here.
 #
@@ -18,6 +21,26 @@ cd "$(dirname "$0")"
 
 COMPOSE_FILE=docker-compose.prod.yml
 ENV_FILE=.env
+
+# Written only after the public URL answers, so the log is a list of deploys that actually
+# worked - which is the list a rollback needs.
+#
+# It exists because a rollback names two SHAs and no single number produces them: the API
+# and the SPA are separate repositories with separate histories. Without this you would be
+# reconstructing which pair was live by reading two commit logs against a clock, at the one
+# moment when that is hardest.
+DEPLOY_LOG=deployed.log
+
+record_deploy() {
+    # Asked of compose rather than of the arguments, so the log records what was actually
+    # resolved - including the run where .env supplied the tag and nothing was passed in.
+    images=$(docker compose -f "$COMPOSE_FILE" config --images)
+    api_image=$(echo "$images" | grep dota-oracle-api | head -1)
+    spa_image=$(echo "$images" | grep dota-oracle-frontend | head -1)
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  api=${api_image##*:}  frontend=${spa_image##*:}" \
+        >> "$DEPLOY_LOG"
+    echo "deploy: recorded in $DEPLOY_LOG"
+}
 
 fail() {
     echo "deploy: $*" >&2
@@ -97,6 +120,7 @@ domain=$(grep -E '^DOMAIN=' "$ENV_FILE" | cut -d= -f2- | tr -d '"')
 echo "deploy: waiting for https://$domain"
 for _ in $(seq 1 30); do
     if curl -fsS -o /dev/null "https://$domain/api/health"; then
+        record_deploy
         echo "deploy: ok"
         docker compose -f "$COMPOSE_FILE" ps
         exit 0

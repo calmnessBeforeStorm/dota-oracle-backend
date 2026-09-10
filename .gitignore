@@ -29,3 +29,7 @@ data/
 .DS_Store
 .idea/
 .vscode/
+
+# Written by deploy.sh on the server: which pair of image tags is actually live.
+# Server state, not repository state.
+deployed.log
