@@ -50,7 +50,8 @@ from app.features.live import (
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "train_serve_pairs.json"
 
 #: The features read out of a match payload, and so the only ones two sources can disagree
-#: about. Everything else in the vector is looked up from our own tables on both sides.
+#: about by value. Coverage of the rest of the vector is structural rather than numeric -
+#: see `TestTheLivePathSuppliesWhatTheModelConsumes`.
 COMPARED = (
     "minute",
     "log_minute",
@@ -220,10 +221,16 @@ class TestTheFixtureItself:
         """The features parity is actually about, and only those.
 
         `COMPARED` is the part of the vector that is read out of a match payload, and it is
-        the only part that can drift between two sources reading two different payloads.
-        The rest - series context, venue, the pre-match block - is looked up from our own
-        tables on both sides, so it is identical by construction and has nothing to do with
-        skew.
+        the only part two sources reading two different payloads can disagree about.
+
+        This docstring used to add that the rest - series context, venue, the pre-match
+        block - "is looked up from our own tables on both sides, so it is identical by
+        construction". That was false for the pre-match block, and being written down is
+        what kept anyone from checking: the live path looks it up nowhere, so it arrived as
+        a constant in every match. Value agreement was never going to catch that, because
+        the constant is served consistently. The question it could not ask is asked by
+        `TestTheLivePathSuppliesWhatTheModelConsumes` above, and between them the two cover
+        the whole vector.
 
         Whole-vector equality was the first version of this test and it was wrong twice
         over. These rows carry `roshan_kills`, `aegis_holder` and `roshan_respawn_in`, gone
