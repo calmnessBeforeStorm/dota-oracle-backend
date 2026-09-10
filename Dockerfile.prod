@@ -1,27 +1,16 @@
-# Production image: the SPA and the API in one artifact.
+# Production image: the API and the worker, nothing else.
 #
-# **The build context is the directory that holds both repositories**, not this one, because
-# the frontend lives in a sibling checkout and Docker cannot reach outside its context.
-# `docker-compose.prod.yml` sets that up; by hand it is:
+# The context is this repository alone. An earlier version built the SPA into the same image
+# from a sibling checkout, which meant the build could only run on a machine holding both
+# repositories - impossible in GitHub Actions, where a job checks out one repo. The SPA now
+# builds in its own repository and Caddy puts the two behind one origin, so the SPA still
+# calls /api and /ws with no base URL compiled in and no CORS to configure.
 #
-#     cd .. && docker build -f dota-oracle-backend/Dockerfile.prod -t dota-oracle .
-#
-# One image rather than two was a deliberate choice: the SPA is useless without this exact
-# API and the API is not a public product, so versioning them apart would mean tracking a
-# compatibility matrix nobody wants to own.
+# Splitting them does reintroduce the risk the single image existed to avoid: an SPA and an
+# API that drift apart. The deploy pins both to the same tag and moves them together, so
+# there is still no compatibility matrix to own - see deploy/docker-compose.prod.yml.
 
-FROM node:22-slim AS spa
-
-WORKDIR /spa
-COPY dota-oracle-frontend/package.json dota-oracle-frontend/package-lock.json ./
-RUN npm ci
-COPY dota-oracle-frontend/ ./
-# Same-origin in production, so the SPA calls /api and /ws on whatever host serves it and
-# needs no base URL baked in.
-RUN npm run build
-
-
-FROM python:3.12-slim AS api
+FROM python:3.12-slim AS build
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -29,13 +18,17 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# build-essential is needed to install, not to run, so it goes no further than this stage.
+# build-essential is needed to install, not to run, so it stays in this stage and never
+# reaches the image that faces the internet.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY dota-oracle-backend/pyproject.toml dota-oracle-backend/README.md dota-oracle-backend/LICENSE ./
-COPY dota-oracle-backend/app ./app
+COPY pyproject.toml README.md LICENSE ./
+COPY app ./app
+# A real install, not `-e`: the editable path leaves the source tree as the import root,
+# which is right for development and wrong for an artifact that must be identical wherever
+# it lands.
 RUN pip install --upgrade pip && pip install .
 
 
@@ -46,27 +39,32 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# curl is here for the healthcheck and nothing else.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends nginx curl \
+    && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/* \
-    && rm -f /etc/nginx/sites-enabled/default
+    && useradd --create-home --uid 10001 app
 
-COPY --from=api /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=api /usr/local/bin /usr/local/bin
-COPY dota-oracle-backend/app ./app
-COPY dota-oracle-backend/alembic.ini ./
-COPY dota-oracle-backend/alembic ./alembic
-COPY --from=spa /spa/dist /srv/spa
+COPY --from=build /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=build /usr/local/bin /usr/local/bin
+COPY app ./app
+COPY alembic.ini ./
+COPY alembic ./alembic
 
-COPY dota-oracle-backend/deploy/nginx.conf /etc/nginx/conf.d/dota-oracle.conf
-COPY dota-oracle-backend/deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+# Nothing in here writes to its own filesystem: state is in Postgres, Redis and the mounted
+# model directory. Running as a non-root user costs nothing and removes a whole class of
+# "container escape" from the conversation.
+USER app
 
-EXPOSE 80
+EXPOSE 8000
 
-# Through nginx, not straight at uvicorn: this checks the path a visitor actually takes, so a
-# broken proxy config fails the healthcheck instead of hiding behind a healthy API.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -fsS http://localhost/api/health || exit 1
+    CMD curl -fsS http://localhost:8000/api/health || exit 1
 
-CMD ["/usr/local/bin/entrypoint.sh"]
+# Behind Caddy, so uvicorn binds every interface inside the container network and trusts the
+# forwarded headers it is given - without those the client IP in the logs is Caddy's.
+CMD ["uvicorn", "app.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--proxy-headers", \
+     "--forwarded-allow-ips", "*"]

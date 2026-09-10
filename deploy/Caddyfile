@@ -1,0 +1,51 @@
+# Production front door.
+#
+# The domain is not written here. It comes from DOMAIN in .env, so this file can live in a
+# public repository while the host it serves stays out of it.
+#
+# Same origin for everything: the SPA calls /api and /ws with no base URL compiled in, and
+# the WebSocket inherits the page's scheme, so wss happens without anything knowing about it.
+#
+# Caddy issues and renews the certificate itself. That needs the A record pointing straight
+# here - in Cloudflare terms DNS only, the grey cloud. Behind the orange cloud the ACME
+# challenge is answered by Cloudflare instead of by Caddy and the certificate never issues.
+
+{
+	# Where Let's Encrypt sends expiry warnings. Also from .env: it is a real address.
+	email {$ACME_EMAIL}
+
+	# Caddy's own admin API listens on localhost by default and nothing here needs it.
+	admin off
+}
+
+{$DOMAIN}, www.{$DOMAIN} {
+	encode zstd gzip
+
+	# The API and the socket. `handle_path` is deliberately not used: the app owns the /api
+	# prefix in its own routes, so stripping it here would 404 everything.
+	@api path /api/* /ws/*
+	handle @api {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		reverse_proxy frontend:80
+	}
+
+	header {
+		# Told to browsers only over a connection that is already HTTPS, which it always is
+		# here - Caddy redirects http to https on its own.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# The stack has no reason to be framed by anyone.
+		X-Frame-Options "DENY"
+		# Server headers name software and version to anyone who asks; nobody needs that.
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

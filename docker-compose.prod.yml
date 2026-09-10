@@ -1,48 +1,55 @@
 name: dota-oracle-prod
 
-# Production. One image serving the SPA and the API, plus the stores and the worker.
+# Production. Images are pulled, never built here: they are built and published by GitHub
+# Actions on push to `main`, so the server needs neither a toolchain nor a checkout of the
+# frontend. Everything it needs lives in /opt/dota-oracle:
 #
-# **Run it from the directory above this one**, because the image needs both repositories in
-# its build context and the frontend is a sibling checkout:
+#     docker-compose.prod.yml   this file
+#     Caddyfile                 the front door
+#     .env                      secrets, chmod 600, never in git
+#     deploy.sh                 pull, migrate, up
+#     models/                   the trained booster and its card
 #
-#     cd .. && docker compose -f dota-oracle-backend/docker-compose.prod.yml up -d --build
+# The API and the SPA are separate images now, which is what made building in CI possible at
+# all - a job checks out one repository. That split reintroduces the risk the single image
+# avoided: an SPA and an API drifting apart.
 #
-# Development is a different file: `docker-compose.yml` here, which runs the stores and the
-# worker and leaves the API and the SPA to be started by hand.
+# `IMAGE_TAG` closes it for the normal case - both follow `main`, both move on every deploy.
+# It cannot close it for a rollback, because the two repositories have different commit
+# SHAs: there is no single number naming "this API and that SPA". So a rollback names both,
+# via API_TAG and FRONTEND_TAG, and pretending otherwise would be the kind of tidy story
+# that leaves someone deploying a mismatched pair at three in the morning.
 
 services:
-  postgres:
-    image: postgres:16-alpine
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-dota_oracle}
-      POSTGRES_USER: ${POSTGRES_USER:-dota}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Read by the Caddyfile. Kept out of the file itself so the repository never names the
+      # host it serves.
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
     volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dota}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account keys. Losing this volume means re-issuing on every
+      # restart, which is how people meet Let's Encrypt's rate limits.
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on:
+      - api
+      - frontend
     restart: unless-stopped
 
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redisdata:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
+  frontend:
+    image: ghcr.io/${IMAGE_OWNER:?set IMAGE_OWNER in .env}/dota-oracle-frontend:${FRONTEND_TAG:-${IMAGE_TAG:-main}}
+    # No ports: nothing reaches it except Caddy, over the compose network.
     restart: unless-stopped
 
-  web:
-    build:
-      # The parent of both repositories. Docker cannot reach outside its context, and the
-      # SPA source is in the sibling checkout.
-      context: ..
-      dockerfile: dota-oracle-backend/Dockerfile.prod
+  api:
+    image: ghcr.io/${IMAGE_OWNER:?set IMAGE_OWNER in .env}/dota-oracle-api:${API_TAG:-${IMAGE_TAG:-main}}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -51,11 +58,9 @@ services:
       REDIS_PORT: 6379
       ENV: production
     volumes:
-      # Trained boosters are not in the image - they are produced by a run somebody watches,
-      # not by a build - so both services that answer with a model mount them from the host.
+      # Trained boosters are not in the image - they come out of a run somebody watched, not
+      # out of a build - so both services that answer with a model mount them from the host.
       - ./models:/app/models:ro
-    ports:
-      - "${WEB_PORT:-8080}:80"
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,9 +72,7 @@ services:
   # features with the code the API serves predictions from, and two images could drift apart
   # between deploys - which is train/serve skew wearing a different hat (invariant 2).
   worker:
-    build:
-      context: ..
-      dockerfile: dota-oracle-backend/Dockerfile.prod
+    image: ghcr.io/${IMAGE_OWNER:?set IMAGE_OWNER in .env}/dota-oracle-api:${API_TAG:-${IMAGE_TAG:-main}}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -77,28 +80,82 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       ENV: production
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     volumes:
       - ./models:/app/models:ro
     command: arq app.workers.settings.WorkerSettings
-    # Not the image's healthcheck. That one curls the API's /api/health, which this process
-    # does not serve, so the container reported `unhealthy` from the second it started and
-    # kept reporting it - a red light that is always red tells you nothing and hides the
-    # real one. arq keeps its own liveness record in Redis with a TTL of
-    # `health_check_interval + 1`, so `--check` fails within a minute of the event loop
-    # dying and passes only while it is actually turning.
+    # Not the image's healthcheck. That one curls /api/health, which this process does not
+    # serve, so the container would report `unhealthy` from its first second and keep doing
+    # it - a red light that is always red tells you nothing and hides the real one. arq keeps
+    # a liveness record in Redis with a TTL of `health_check_interval + 1`, so `--check`
+    # fails within a minute of the event loop dying and passes only while it is turning.
     healthcheck:
       test: ["CMD", "arq", "app.workers.settings.WorkerSettings", "--check"]
       interval: 30s
       timeout: 10s
       start_period: 20s
       retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dota_oracle}
+      POSTGRES_USER: ${POSTGRES_USER:-dota}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    # No published port. The database is reachable only from the compose network; reaching it
+    # from a laptop is what the SSH tunnel is for.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Tuned for the 8 GB box rather than left at defaults, which assume a much smaller one.
+    # shared_buffers is the usual quarter of RAM; effective_cache_size tells the planner how
+    # much the OS is likely caching, and being wrong low here makes it refuse index scans.
+    # The archive is ~400k snapshot rows and grows, so the planner's view matters.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=2GB
+      - -c
+      - effective_cache_size=5GB
+      - -c
+      - maintenance_work_mem=512MB
+      - -c
+      - work_mem=16MB
+      # SSD: random reads cost close to sequential ones, and the default 4.0 talks the
+      # planner out of indexes it should be using.
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - max_connections=60
+      - -c
+      - wal_compression=on
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dota}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # Redis holds the live feed and the arq queue - both rebuildable, neither worth an
+    # unbounded memory footprint on a box that also runs Postgres.
+    command: redis-server --maxmemory 512mb --maxmemory-policy noeviction --save 900 1
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
 volumes:
   pgdata:
   redisdata:
+  caddydata:
+  caddyconfig:
