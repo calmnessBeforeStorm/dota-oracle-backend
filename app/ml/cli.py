@@ -18,17 +18,26 @@ import asyncio
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import dispose_engine
+from app.features.live import FEATURE_ORDER, SERVED_FEATURES
 from app.ml.evaluate import format_report
 from app.ml.pipeline import DEFAULT_ROUNDS, train
 from app.ml.registry import list_models
 from app.workers.drift import check_calibration_drift
 
 
-async def cmd_train(rounds: int, notes: str, weighted: bool) -> None:
-    result = await train(rounds=rounds, notes=notes, weighted=weighted)
+async def cmd_train(rounds: int, notes: str, weighted: bool, with_prematch: bool) -> None:
+    feature_names = FEATURE_ORDER if with_prematch else SERVED_FEATURES
+    result = await train(rounds=rounds, notes=notes, weighted=weighted, feature_names=feature_names)
 
     print(f"version:  {result.version}")
     print(f"artifact: {result.booster_path}")
+    kind = "full" if with_prematch else "live-supplied"
+    print(f"features: {len(result.card.feature_order)} ({kind})")
+    if with_prematch:
+        # Scored through the serving view like any other run, so this number already says
+        # what the constants cost. Printed because the choice is the reader's to justify.
+        print("          the live path supplies none of the pre-match block; it is scored")
+        print("          as the constants production would actually send")
     print(
         f"train:    {result.card.train_matches} matches / {result.card.train_rows} rows "
         f"({result.card.train_window[0]} .. {result.card.train_window[-1]})"
@@ -91,6 +100,15 @@ def main() -> None:
         "--notes", default="", help="free text stored on the model card, e.g. what changed"
     )
     trainer.add_argument(
+        "--with-prematch",
+        action="store_true",
+        help=(
+            "train on all 28 features including the pre-match block. Off by default: the "
+            "poller supplies none of that block, so those features reach production as "
+            "constants. The gate scores it as served either way"
+        ),
+    )
+    trainer.add_argument(
         "--no-weights",
         dest="weighted",
         action="store_false",
@@ -109,7 +127,7 @@ def main() -> None:
     async def run() -> None:
         try:
             if args.command == "train":
-                await cmd_train(args.rounds, args.notes, args.weighted)
+                await cmd_train(args.rounds, args.notes, args.weighted, args.with_prematch)
             elif args.command == "drift":
                 await cmd_drift()
             else:

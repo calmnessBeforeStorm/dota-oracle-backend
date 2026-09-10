@@ -107,7 +107,6 @@ def test_steam_adapter_counts_only_living_buildings() -> None:
     assert state.dire.barracks_count == 1
 
 
-
 #: Shaped after a real GetLiveLeagueGames entry - the payload the poller actually receives.
 LIVE_LEAGUE_SAMPLE: dict[str, Any] = {
     "match_id": 7000000002,
@@ -154,7 +153,7 @@ class TestTheLivePathSuppliesWhatTheModelConsumes:
         as_polled = steam.from_live_league_game(LIVE_LEAGUE_SAMPLE)
         as_if_known = replace(
             as_polled,
-            prematch={name: 1.0 for name in PREMATCH_FEATURE_NAMES},
+            prematch=dict.fromkeys(PREMATCH_FEATURE_NAMES, 1.0),
             prematch_prior=0.75,
         )
 

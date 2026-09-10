@@ -27,9 +27,10 @@ over 60 matches. All three stay on `GameState` as raw data and out of the featur
 """
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from functools import cache
 
-from app.features.game_state import GameState
+from app.features.game_state import GameState, TeamState
 
 #: `tier` is deliberately absent, and it is a trap rather than a weak feature. Section 5.4
 #: fixes it to 1 at inference, because the product only serves Tier 1 - so a tier that varies
@@ -172,6 +173,38 @@ def build_live_features(state: GameState) -> dict[str, float]:
     if missing:
         raise RuntimeError(f"feature builder is out of sync with FEATURE_ORDER: {sorted(missing)}")
     return features
+
+
+@cache
+def live_defaults() -> Mapping[str, float]:
+    """What the live path substitutes for the features it does not supply.
+
+    Derived by running the builder over a state shaped the way the poller shapes one -
+    `prematch` empty, `prematch_prior` absent - instead of restating the constants. Restating
+    them is exactly how the comment above those defaults came to describe `skill_sigma_sum`
+    as a difference between the two sides, which it is not. A copy drifts; this cannot.
+    """
+    blank = GameState(
+        match_id=0,
+        minute=1,
+        radiant=TeamState(),
+        dire=TeamState(),
+        gold_adv=0,
+        xp_adv=0,
+    )
+    built = build_live_features(blank)
+    return {name: built[name] for name in PREMATCH_BLOCK}
+
+
+def serving_view(features: Mapping[str, float]) -> dict[str, float]:
+    """A training row as the serving path would actually produce it.
+
+    The gate scores the holdout through this, so what a card reports is what production
+    would run. Scoring the stored row instead measures a model that only exists in the
+    training set: `match_snapshots` carries a real pre-match block, and the live path
+    carries none of it.
+    """
+    return {**features, **live_defaults()}
 
 
 def as_vector(features: dict[str, float], order: Sequence[str] = FEATURE_ORDER) -> list[float]:

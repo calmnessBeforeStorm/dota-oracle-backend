@@ -187,9 +187,7 @@ class TestTheBoosterDecidesItsOwnFeatureSet:
         booster.save_model(str(path))
         return path
 
-    def test_a_model_fitted_on_the_served_set_can_score_a_full_feature_dict(
-        self, tmp_path
-    ) -> None:
+    def test_a_model_fitted_on_the_served_set_can_score_a_full_feature_dict(self, tmp_path) -> None:
         from app.features.live import SERVED_FEATURES
         from app.ml.calibration import PlattCalibrator
         from app.ml.predictor import LightGBMPredictor
