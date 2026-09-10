@@ -58,8 +58,12 @@ USER app
 
 EXPOSE 8000
 
+# 127.0.0.1, not localhost. The image resolves `localhost` to both 127.0.0.1 and ::1,
+# while uvicorn binds IPv4 only - so a client that picks the v6 address is refused by a
+# perfectly healthy process. Measured in this image: curl to localhost:8000 prints
+# "Failed to connect to localhost port 8000", the same line that showed up mid-deploy.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -fsS http://localhost:8000/api/health || exit 1
+    CMD curl -fsS http://127.0.0.1:8000/api/health || exit 1
 
 # Behind Caddy, so uvicorn binds every interface inside the container network and trusts the
 # forwarded headers it is given - without those the client IP in the logs is Caddy's.

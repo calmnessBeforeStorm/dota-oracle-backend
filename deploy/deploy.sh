@@ -111,10 +111,19 @@ docker image prune -f >/dev/null
 # Not `curl http://localhost/api/health`: Caddy redirects http to https and answers only for
 # the configured domain, so localhost over plain http is a 308 to a name it does not serve -
 # a health check that can never pass.
+# 127.0.0.1 rather than localhost, for the same reason the image's own healthcheck uses it:
+# the container resolves localhost to ::1 as well, and uvicorn binds IPv4 only.
+#
+# Output is discarded while retrying and only reported if the loop gives up. Printing each
+# failed attempt made a normal start look like a fault that was then ignored - the first
+# attempt lands before uvicorn is listening, so "curl: (7) Failed to connect" followed by
+# "deploy: ok" is what success looked like. A check that cries wolf on its way to passing is
+# indistinguishable from one that passes without checking.
 echo "deploy: waiting for the API"
 for _ in $(seq 1 30); do
-    if docker compose -f "$COMPOSE_FILE" exec -T api curl -fsS -o /dev/null http://localhost:8000/api/health; then
+    if docker compose -f "$COMPOSE_FILE" exec -T api         curl -fsS -o /dev/null http://127.0.0.1:8000/api/health 2>/dev/null; then
         api_up=yes
+        echo "deploy: the API is answering"
         break
     fi
     sleep 2
@@ -133,7 +142,7 @@ fi
 domain=$(grep -E '^DOMAIN=' "$ENV_FILE" | cut -d= -f2- | tr -d '"')
 echo "deploy: waiting for https://$domain"
 for _ in $(seq 1 30); do
-    if curl -fsS -o /dev/null "https://$domain/api/health"; then
+    if curl -fsS -o /dev/null "https://$domain/api/health" 2>/dev/null; then
         record_deploy
         echo "deploy: ok"
         docker compose -f "$COMPOSE_FILE" ps
