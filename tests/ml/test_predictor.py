@@ -158,3 +158,58 @@ class TestTheBaselineReadsTheRightFeature:
         features = build_live_features(state_with(gold_adv=0, minute=20))
 
         assert 0.4 < BaselinePredictor().predict_proba_radiant(features) < 0.6
+
+
+class TestTheBoosterDecidesItsOwnFeatureSet:
+    """A model is served through the feature list it was fitted on, not a global constant.
+
+    `FEATURE_ORDER` is what the builder produces; it is not necessarily what a given booster
+    was trained on. `SERVED_FEATURES` is smaller - it drops the pre-match block, which the
+    live path does not supply - and a model fitted on it takes a 19-wide vector. Building
+    that vector from the global order hands the booster 28 columns and it refuses them,
+    which is the good case; the bad case is a global order that still has 28 names in a
+    different arrangement, where the booster accepts the row and scores the wrong features.
+    """
+
+    def _booster_on(self, names, tmp_path):
+        import lightgbm as lgb
+        import numpy as np
+
+        rng = np.random.default_rng(0)
+        rows = rng.normal(size=(200, len(names)))
+        labels = (rows[:, 0] > 0).astype(int)
+        booster = lgb.train(
+            {"objective": "binary", "verbose": -1, "num_leaves": 3, "min_data_in_leaf": 5},
+            lgb.Dataset(rows, label=labels, feature_name=list(names)),
+            num_boost_round=3,
+        )
+        path = tmp_path / "candidate.txt"
+        booster.save_model(str(path))
+        return path
+
+    def test_a_model_fitted_on_the_served_set_can_score_a_full_feature_dict(
+        self, tmp_path
+    ) -> None:
+        from app.features.live import SERVED_FEATURES
+        from app.ml.calibration import PlattCalibrator
+        from app.ml.predictor import LightGBMPredictor
+
+        path = self._booster_on(SERVED_FEATURES, tmp_path)
+        features = build_live_features(state_with(gold_adv=2000, minute=20))
+
+        served = LightGBMPredictor(path, "test-served", PlattCalibrator(a=1.0, b=0.0))
+        p = served.predict_proba_radiant(features)
+
+        assert 0.0 < p < 1.0
+
+    def test_it_reads_the_names_the_booster_was_fitted_on(self, tmp_path) -> None:
+        """The order is a property of the artifact, so it survives the global list changing."""
+        from app.features.live import SERVED_FEATURES
+        from app.ml.calibration import PlattCalibrator
+        from app.ml.predictor import LightGBMPredictor
+
+        path = self._booster_on(SERVED_FEATURES, tmp_path)
+
+        served = LightGBMPredictor(path, "test-served", PlattCalibrator(a=1.0, b=0.0))
+
+        assert tuple(served.feature_order) == tuple(SERVED_FEATURES)

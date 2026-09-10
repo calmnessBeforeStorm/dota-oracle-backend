@@ -43,6 +43,7 @@ from app.features.adapters.stratz import snapshot_at
 from app.features.live import (
     FEATURE_ORDER,
     PREMATCH_FEATURE_NAMES,
+    SERVED_FEATURES,
     build_live_features,
 )
 
@@ -159,7 +160,7 @@ class TestTheLivePathSuppliesWhatTheModelConsumes:
 
         polled = build_live_features(as_polled)
         known = build_live_features(as_if_known)
-        defaulted = sorted(name for name in FEATURE_ORDER if polled[name] != known[name])
+        defaulted = sorted(name for name in SERVED_FEATURES if polled[name] != known[name])
 
         assert not defaulted, (
             f"{len(defaulted)} features the model consumes are not supplied by the live "

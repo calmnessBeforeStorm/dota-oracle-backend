@@ -90,6 +90,23 @@ PREMATCH_FEATURE_NAMES: tuple[str, ...] = (
     "maps_last_24h_diff",
 )
 
+#: Everything the pre-match sweep owns, prior included.
+PREMATCH_BLOCK: tuple[str, ...] = (*PREMATCH_FEATURE_NAMES, "prematch_prior")
+
+#: The features a model may consume today: those the live path fills from the payload.
+#:
+#: The builder still computes the pre-match block, because `featurize` stores it and the
+#: poller will eventually pass it. But `from_live_league_game` does not pass it, so at
+#: serving time every one of those features is the default below - the same number in every
+#: match - while training saw real values. Measured 10.09.2026 on `lgbm-20260901-102407`:
+#: 1575 of its 2190 splits stood on that block, and `prematch_prior` arrived as 0.5, a value
+#: that appears in exactly 0 of 242295 training rows. Worse, `skill_sigma_sum` arrived as
+#: 0.0, below its training minimum of 1.2356 - a value the model had never seen at all.
+#:
+#: Training on a signal the serving path cannot supply is train/serve skew whatever the
+#: number substituted, so a model is trained on this set until the poller supplies the rest.
+SERVED_FEATURES: tuple[str, ...] = tuple(n for n in FEATURE_ORDER if n not in PREMATCH_BLOCK)
+
 
 #: Softens the division near minute zero, where the raw ratio would explode.
 #:
@@ -143,9 +160,12 @@ def build_live_features(state: GameState) -> dict[str, float]:
         "prematch_prior": 0.5 if state.prematch_prior is None else state.prematch_prior,
     }
 
-    # Zero is the neutral value for every one of these: they are differences between the
-    # two sides, so "we know nothing" and "the sides are equal" coincide. That is not true
-    # of the state features above, which is why only these default.
+    # Zero reads as neutral for most of these - they are differences between the two sides,
+    # so "we know nothing" and "the sides are equal" coincide. It is NOT true of
+    # `skill_sigma_sum`, which is a sum of two TrueSkill sigmas and never reaches zero in
+    # training (minimum 1.2356 over 242295 rows): zero there is a value the model has never
+    # seen. Either way a default is only honest while nothing consumes it - see
+    # `SERVED_FEATURES`.
     for name in PREMATCH_FEATURE_NAMES:
         features[name] = float(state.prematch.get(name, 0.0))
     missing = set(FEATURE_ORDER) - features.keys()
@@ -154,6 +174,12 @@ def build_live_features(state: GameState) -> dict[str, float]:
     return features
 
 
-def as_vector(features: dict[str, float]) -> list[float]:
-    """Ordered vector for the model. Order is fixed by FEATURE_ORDER, never by dict order."""
-    return [features[name] for name in FEATURE_ORDER]
+def as_vector(features: dict[str, float], order: Sequence[str] = FEATURE_ORDER) -> list[float]:
+    """Ordered vector for the model. Order comes from the caller, never from dict order.
+
+    `order` is the feature set the model was trained on, which is not always the full
+    builder output: a model trained on `SERVED_FEATURES` reads 19 of the 28 keys here.
+    Passing the model's own list - `ModelCard.feature_order` at serving time - is what keeps
+    a booster from being fed a vector in a shape it was never fitted on.
+    """
+    return [features[name] for name in order]

@@ -126,9 +126,16 @@ class LightGBMPredictor:
         self.version = version
         self._booster = lgb.Booster(model_file=str(model_path))
         self._calibrator = calibrator
+        #: The names this booster was actually fitted on, read off the artifact rather than
+        #: taken from `FEATURE_ORDER`. The global list is what the *builder* produces, which
+        #: is not the same thing: a model trained on `SERVED_FEATURES` reads 19 of those 28
+        #: keys. Using the global order here fed a 19-feature booster a 28-wide row, and the
+        #: failure mode it does not catch is worse - two lists of equal length in a different
+        #: arrangement score silently, against the wrong features.
+        self.feature_order: tuple[str, ...] = tuple(self._booster.feature_name())
 
     def predict_proba_radiant(self, features: dict[str, float]) -> float:
-        raw = float(self._booster.predict([as_vector(features)])[0])
+        raw = float(self._booster.predict([as_vector(features, self.feature_order)])[0])
         return self._calibrator.apply_one(raw)
 
 
