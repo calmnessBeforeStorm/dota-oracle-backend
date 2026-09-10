@@ -227,7 +227,9 @@ async def cmd_refresh_stages(limit: int | None) -> None:
     print(f"stages written: {written}")
 
 
-async def cmd_map_leagues(limit: int | None, apply: bool, escalate: int) -> None:
+async def cmd_map_leagues(
+    limit: int | None, apply: bool, escalate: int, active_days: int | None
+) -> None:
     """Propose (and optionally apply) league -> Liquipedia mappings.
 
     A wrong match mislabels every game of a tournament, so nothing is written unless
@@ -235,7 +237,12 @@ async def cmd_map_leagues(limit: int | None, apply: bool, escalate: int) -> None
     """
     async with LiquipediaClient() as client:
         report = await sync_liquipedia_leagues(
-            client, get_session_factory(), limit=limit, apply=apply, escalate=escalate
+            client,
+            get_session_factory(),
+            limit=limit,
+            apply=apply,
+            escalate=escalate,
+            active_days=active_days,
         )
 
     print(f"leagues examined: {report.leagues_seen}")
@@ -420,6 +427,16 @@ def main() -> None:
         "--apply", action="store_true", help="persist confident proposals (default: dry run)"
     )
     mapping.add_argument(
+        "--active-days",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "only leagues that played inside the last N days, busiest first; "
+            "without it the pass runs oldest-first over every unmapped league"
+        ),
+    )
+    mapping.add_argument(
         "--escalate",
         type=int,
         default=0,
@@ -478,7 +495,7 @@ def main() -> None:
             elif args.command == "resolve-outcomes":
                 await cmd_resolve_outcomes(args.limit)
             elif args.command == "map-leagues":
-                await cmd_map_leagues(args.limit, args.apply, args.escalate)
+                await cmd_map_leagues(args.limit, args.apply, args.escalate, args.active_days)
             elif args.command == "refresh-meta":
                 await cmd_refresh_meta()
             elif args.command == "refresh-stages":

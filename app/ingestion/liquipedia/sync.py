@@ -13,7 +13,7 @@ is only spent on leagues whose mapping was accepted.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from sqlalchemy import func, select, update
@@ -234,20 +234,60 @@ async def _team_names_by_league(session: AsyncSession) -> dict[int, frozenset[st
     return {league_id: frozenset(names) for league_id, names in collected.items()}
 
 
+async def _candidate_leagues(
+    session: AsyncSession,
+    *,
+    limit: int | None,
+    only_unmapped: bool,
+    active_days: int | None,
+) -> list[tuple[int, str | None]]:
+    """Leagues to examine, in the order the budget should be spent on them."""
+    statement = select(League.league_id, League.name)
+    if only_unmapped:
+        statement = statement.where(League.liquipedia_slug.is_(None))
+
+    if active_days is not None:
+        since = datetime.now(UTC) - timedelta(days=active_days)
+        played = (
+            select(Match.league_id, func.count().label("maps"))
+            .where(Match.start_time >= since, Match.league_id.is_not(None))
+            .group_by(Match.league_id)
+            .subquery()
+        )
+        statement = (
+            statement.join(played, played.c.league_id == League.league_id)
+            # Busiest first: a league playing forty maps this week is a tournament, one that
+            # played a single map is usually noise, and the budget runs out mid-list.
+            .order_by(played.c.maps.desc(), League.league_id)
+        )
+    else:
+        statement = statement.order_by(League.league_id)
+
+    if limit is not None:
+        statement = statement.limit(limit)
+    return [(int(league_id), name) for league_id, name in (await session.execute(statement)).all()]
+
+
 async def propose_mappings(
     client: LiquipediaSource,
     session_factory: async_sessionmaker[AsyncSession],
     limit: int | None = None,
     only_unmapped: bool = True,
+    active_days: int | None = None,
 ) -> list[MappingProposal]:
-    """Score a Liquipedia page for each league. Writes nothing."""
+    """Score a Liquipedia page for each league. Writes nothing.
+
+    `active_days` restricts the pass to leagues that have played inside that window, busiest
+    first. Without it the order is by `league_id`, which is oldest first - and since
+    `/leagues` hands us Valve's entire history, a run with `limit` then spends its whole
+    budget on tournaments that ended years ago and never reaches the ones on air today.
+    Every candidate costs a search plus a page read against somebody else's rate limit, so
+    which leagues we pick is the whole cost of the job.
+    """
     async with session_factory() as session:
-        statement = select(League.league_id, League.name).order_by(League.league_id)
-        if only_unmapped:
-            statement = statement.where(League.liquipedia_slug.is_(None))
-        if limit is not None:
-            statement = statement.limit(limit)
-        leagues = list((await session.execute(statement)).all())
+        leagues = await _candidate_leagues(
+            session, limit=limit, only_unmapped=only_unmapped, active_days=active_days
+        )
 
     async with session_factory() as session:
         evidence = await league_evidence(session)
@@ -572,10 +612,13 @@ async def sync_liquipedia_leagues(
     apply: bool = False,
     with_stages: bool = True,
     escalate: int = 0,
+    active_days: int | None = None,
 ) -> SyncReport:
     """Full pass: propose, escalate the close calls, then optionally persist and read stages."""
     report = SyncReport()
-    proposals = await propose_mappings(client, session_factory, limit=limit)
+    proposals = await propose_mappings(
+        client, session_factory, limit=limit, active_days=active_days
+    )
 
     if escalate:
         async with session_factory() as session:
