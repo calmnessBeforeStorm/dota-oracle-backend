@@ -111,10 +111,17 @@ services:
     # from a laptop is what the SSH tunnel is for.
     volumes:
       - pgdata:/var/lib/postgresql/data
-    # Tuned for the 8 GB box rather than left at defaults, which assume a much smaller one.
-    # shared_buffers is the usual quarter of RAM; effective_cache_size tells the planner how
-    # much the OS is likely caching, and being wrong low here makes it refuse index scans.
-    # The archive is ~400k snapshot rows and grows, so the planner's view matters.
+    # Tuned for the 8 GB box. The stock 128 MB of shared_buffers assumes a far smaller
+    # machine, and it shows here: the snapshot table is ~400k rows today and heads for 2.6M
+    # once the detail backfill finishes, so every aggregate would go to disk.
+    #
+    # effective_cache_size is not an allocation - it is what the planner assumes the OS is
+    # caching, and setting it low is how a planner talks itself out of index scans.
+    #
+    # work_mem is per sort, not per connection, so the worst case is roughly
+    # max_connections x work_mem on top of shared_buffers. 60 x 16 MB leaves room on 7.8 GB
+    # alongside the 2 GB of buffers; raising either without the other moving is how a box
+    # starts swapping under a query nobody thought was heavy.
     command:
       - postgres
       - -c
@@ -125,10 +132,14 @@ services:
       - maintenance_work_mem=512MB
       - -c
       - work_mem=16MB
-      # SSD: random reads cost close to sequential ones, and the default 4.0 talks the
-      # planner out of indexes it should be using.
+      # A compromise, not a measurement: 4.0 is written for spinning rust and stops the
+      # planner using indexes it should, while 1.1 claims NVMe. This disk is SATA-backed.
       - -c
-      - random_page_cost=1.1
+      - random_page_cost=1.5
+      # The backfill writes in long bursts. With the default 1 GB the checkpointer runs
+      # constantly during them, which is write amplification for no benefit.
+      - -c
+      - max_wal_size=2GB
       - -c
       - max_connections=60
       - -c
