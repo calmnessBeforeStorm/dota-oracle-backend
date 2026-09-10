@@ -22,6 +22,8 @@ models/*.json
 models/*.pkl
 data/
 *.parquet
+# Scratch measurement dumps written next to the code during an investigation.
+*.ablation.json
 
 # OS / IDE
 .DS_Store
