@@ -11,7 +11,7 @@ from typing import Any, Self
 import httpx
 from tenacity import (
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
@@ -51,11 +51,28 @@ def _check(response: httpx.Response) -> None:
     raise_for_status(response)
 
 
+def is_transient(exc: BaseException) -> bool:
+    """Whether asking again could get a different answer.
+
+    Server trouble (5xx, 408), a dropped connection and a rate limit can all clear up. A
+    client error cannot: the same request gets the same refusal, only later and at the same
+    price. Every status error used to be retried four times, and on 2026-09-11 that turned
+    one refusal into four twice over - STRATZ's 403 against a blocked host, and OpenDota's
+    404 for every match still being played, each against a daily allowance.
+    """
+    if isinstance(exc, (httpx.TransportError, RateLimitedError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status >= 500 or status == 408
+    return False
+
+
 #: Shared by every request method. 429 is retried like the rest, but waits far longer than a
 #: transport hiccup: the server has said it wants less traffic, and honouring that is the
 #: point.
 _retrying = retry(
-    retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError, RateLimitedError)),
+    retry=retry_if_exception(is_transient),
     wait=wait_exponential(multiplier=2, min=2, max=120),
     stop=stop_after_attempt(4),
     reraise=True,
