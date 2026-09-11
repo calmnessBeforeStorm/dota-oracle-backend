@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     # External sources (spec section 2)
     opendota_api_key: str | None = None
     stratz_api_token: str | None = None
+    #: Whether STRATZ answers from this host at all.
+    #:
+    #: Not a feature flag - a fact about the network. Measured 2026-09-11 on the production
+    #: server: every request came back 403 with a Cloudflare HTML page, with a token verified
+    #: identical to one that returned 200 from a residential connection. When false, outcomes
+    #: are resolved from OpenDota instead and the STRATZ details backfill is not scheduled.
+    stratz_available: bool = True
     steam_api_key: str | None = None
     liquipedia_user_agent: str = "dota-oracle/0.1 (contact@example.com)"
 

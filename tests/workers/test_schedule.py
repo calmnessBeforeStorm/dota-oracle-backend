@@ -95,3 +95,22 @@ def test_the_training_set_has_a_schedule_at_all() -> None:
 
     job = _job(refresh_training_set)
     assert job.timeout_s is not None and job.timeout_s > ARQ_DEFAULT_JOB_TIMEOUT
+
+
+def test_the_details_backfill_is_not_scheduled_where_stratz_is_unreachable() -> None:
+    """A job that can only fail should not run at all.
+
+    On a host STRATZ blocks, the hourly backfill spent twenty requests against a refusal
+    every hour, logged twenty warnings, gave up, and was reported by arq as a success. That
+    is noise which trains people to stop reading the log. Its data is not needed there
+    either: training runs on the machine that can reach STRATZ, and the model file is copied.
+    """
+    from app.workers.settings import stratz_gated
+
+    everything = list(WorkerSettings.cron_jobs)
+    names = {job.name for job in stratz_gated(everything, stratz_available=False)}
+
+    assert f"cron:{backfill_details_hourly.__name__}" not in names
+    # The resolver stays: it switches source rather than stopping.
+    assert f"cron:{resolve_prediction_outcomes.__name__}" in names
+    assert stratz_gated(everything, stratz_available=True) == everything

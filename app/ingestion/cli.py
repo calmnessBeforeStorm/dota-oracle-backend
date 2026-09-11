@@ -21,7 +21,6 @@ from app.features.featurize import featurize
 from app.features.prematch import rebuild_prematch
 from app.ingestion.clients.liquipedia import LiquipediaClient
 from app.ingestion.clients.opendota import OpenDotaClient
-from app.ingestion.clients.stratz import StratzClient
 from app.ingestion.liquipedia.sync import (
     refresh_league_meta,
     refresh_stages,
@@ -46,6 +45,7 @@ from app.ingestion.workers.details import (
 )
 from app.ingestion.workers.outcomes import (
     count_unresolved_predictions,
+    outcome_client,
     resolve_outcomes,
 )
 
@@ -116,8 +116,10 @@ async def cmd_resolve_outcomes(limit: int) -> None:
     not moved in ten hours - the dashboard was not waiting for time to pass, it was waiting
     for something that had no schedule.
     """
-    async with StratzClient() as client:
-        report = await resolve_outcomes(client, get_session_factory(), limit=limit)
+    client, source = outcome_client()
+    async with client:
+        report = await resolve_outcomes(client, get_session_factory(), limit=limit, source=source)
+    print(f"source:          {source}")
 
     print(f"requested:       {report.requested}")
     print(f"fetched:         {report.fetched}")

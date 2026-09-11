@@ -23,16 +23,48 @@ from typing import Any
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.models.matches import Match
 from app.db.models.raw import RawMatch
 from app.db.models.training import Prediction
 from app.db.session import get_session_factory
+from app.ingestion.clients.opendota import OpenDotaClient
 from app.ingestion.clients.stratz import StratzClient
 from app.ingestion.sources import RawSource
 from app.ingestion.workers.details import DetailsReport, MatchDetailSource, fetch_details
 
 log = get_logger(__name__)
+
+#: Payload sources that carry a match outcome `normalize` can read.
+OUTCOME_SOURCES = (RawSource.STRATZ_MATCH, RawSource.OPENDOTA_MATCH)
+
+
+def outcome_source(*, stratz_available: bool) -> RawSource:
+    """Where outcomes come from on this host.
+
+    STRATZ when it answers, because its payload is also what snapshots are built from, so a
+    resolved outcome makes the map trainable too. OpenDota when it does not - measured
+    2026-09-11, the production server is refused by STRATZ's Cloudflare outright, and
+    OpenDota answered every match STRATZ had turned away.
+
+    Swapping the source is safe here in a way it would not be for features. An outcome is
+    one bit and it is the same bit in both payloads; what differs between the providers is
+    the per-minute series, which this job does not use.
+    """
+    return RawSource.STRATZ_MATCH if stratz_available else RawSource.OPENDOTA_MATCH
+
+
+def outcome_client() -> tuple[StratzClient | OpenDotaClient, RawSource]:
+    """The client and the source label that go together for this host.
+
+    Returned as a pair so the two cannot be chosen separately - a STRATZ payload stored under
+    the OpenDota label would be parsed with the wrong schema and yield no outcome at all.
+    """
+    source = outcome_source(stratz_available=get_settings().stratz_available)
+    if source is RawSource.STRATZ_MATCH:
+        return StratzClient(), source
+    return OpenDotaClient(), source
 
 
 def _unresolved() -> Any:
@@ -46,9 +78,12 @@ def _unresolved() -> Any:
     outcome_known = exists().where(
         (Match.match_id == Prediction.match_id) & Match.radiant_win.is_not(None)
     )
+    # Either provider's payload counts. Both carry the outcome and `normalize` reads it from
+    # whichever it finds, so checking only the current source would spend quota a second
+    # time on every match the moment the source changed.
     payload_held = exists().where(
         (RawMatch.match_id == Prediction.match_id)
-        & (RawMatch.source == str(RawSource.STRATZ_MATCH))
+        & (RawMatch.source.in_([str(source) for source in OUTCOME_SOURCES]))
     )
     return (
         select(Prediction.match_id)
@@ -72,13 +107,14 @@ async def resolve_outcomes(
     client: MatchDetailSource,
     session_factory: async_sessionmaker[AsyncSession],
     limit: int = 200,
+    source: RawSource = RawSource.STRATZ_MATCH,
 ) -> DetailsReport:
     """Fetch the matches behind unscored predictions. Stores payloads; `normalize` reads
     the outcome out of them."""
     async with session_factory() as session:
         match_ids = await select_unresolved_predictions(session, limit)
 
-    report = await fetch_details(client, session_factory, match_ids, RawSource.STRATZ_MATCH)
+    report = await fetch_details(client, session_factory, match_ids, source)
 
     async with session_factory() as session:
         report.remaining = await count_unresolved_predictions(session)
@@ -99,6 +135,7 @@ OUTCOMES_PER_RUN = 200
 
 async def resolve_prediction_outcomes(ctx: dict[str, Any], limit: int = OUTCOMES_PER_RUN) -> int:
     """arq entry point. Returns payloads fetched."""
-    async with StratzClient() as client:
-        report = await resolve_outcomes(client, get_session_factory(), limit=limit)
+    client, source = outcome_client()
+    async with client:
+        report = await resolve_outcomes(client, get_session_factory(), limit=limit, source=source)
     return report.fetched

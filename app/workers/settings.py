@@ -25,6 +25,22 @@ from app.workers.drift import check_calibration_drift
 from app.workers.training_set import refresh_training_set
 
 
+def stratz_gated(jobs: list[Any], *, stratz_available: bool) -> list[Any]:
+    """Drop the jobs that can only fail on a host STRATZ refuses.
+
+    Only the details backfill. On such a host it spent twenty requests against a refusal
+    every hour, logged twenty warnings, gave up - and arq recorded a success, so eight hours
+    of it looked like normal operation. Its data is not needed there anyway: training runs
+    where STRATZ is reachable and the model file is copied across.
+
+    The outcome resolver is not dropped. It switches source instead; see
+    `app.ingestion.workers.outcomes.outcome_source`.
+    """
+    if stratz_available:
+        return jobs
+    return [job for job in jobs if job.coroutine is not backfill_details_hourly]
+
+
 async def startup(ctx: dict[str, Any]) -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -56,76 +72,79 @@ class WorkerSettings:
         check_calibration_drift,
         refresh_training_set,
     ]
-    cron_jobs: ClassVar[list[Any]] = [
-        # Live loop: every 30s, per spec section 2.4.
-        cron(poll_live_games, second={0, 30}, run_at_startup=True, max_tries=1),
-        # Liquipedia: no more than hourly, everything else served from cache.
-        cron(sync_liquipedia, minute=7, max_tries=2),
-        # Pick up matches that finished since the last pass. Hourly and cheap: one call when
-        # nothing is new. Unlike the historical backfill this one is safe to schedule - it
-        # cannot run away, because it stops the moment it reaches what is already stored.
-        # Without it the dataset ends on the day the backfill started and no prediction the
-        # live loop makes can ever be scored against an outcome.
-        cron(catch_up_pro_matches, minute=23, max_tries=2),
-        # Ask STRATZ directly about the matches we have already predicted. The summary
-        # feed reaches them eventually; "eventually" is not a property the accuracy
-        # dashboard or the drift alert can be built on, and a served prediction nobody
-        # ever scores is a prediction that taught us nothing.
-        cron(
-            resolve_prediction_outcomes,
-            minute=41,
-            max_tries=2,
-            timeout=stratz_slice_timeout(OUTCOMES_PER_RUN),
-        ),
-        # The history backfill, which had no schedule at all and only advanced when somebody
-        # ran the CLI. 23688 maps remain, so at a few hundred an hour it is days of work that
-        # nobody should have to babysit.
-        #
-        # Bounded per run rather than left to fetch until it is refused - see
-        # `DETAILS_PER_HOUR`. Never retried: a failed slice is not worth a second helping of
-        # somebody else's quota, and the next hour picks up exactly where it stopped.
-        cron(
-            backfill_details_hourly,
-            minute=11,
-            max_tries=1,
-            timeout=stratz_slice_timeout(DETAILS_PER_HOUR),
-        ),
-        # Behind the outcome resolver, because it is what finishes that job: the resolver
-        # stores a payload and this is the step that reads the outcome out of it. Without it
-        # the chain ended in the raw table - every job green, the accuracy dashboard empty,
-        # and nothing anywhere saying why.
-        #
-        # The gap used to be a guess. It is now the resolver's worst case: `OUTCOMES_PER_RUN`
-        # maps at the STRATZ throttle is 400 seconds, so :41 + 6m40s = :47:40 - which the old
-        # :47 slot sat *inside*, and a full queue would have run straight past it. :52 clears
-        # it with four minutes to spare. Measured 2026-09-01: real runs took 288s and 228s,
-        # and this pass itself takes 61s over 28595 summary and 6001 detail payloads, so the
-        # pair fits inside the hour with room left.
-        #
-        # Still two crons rather than the resolver enqueueing this one, deliberately: a
-        # resolver that dies should not take normalization with it, and missing the gap costs
-        # an hour of latency, not a row - both jobs are idempotent.
-        cron(normalize_stored_payloads, minute=52, max_tries=1),
-        # The last link that only moved when a person typed it. Once a day rather than hourly
-        # because that is the cadence the data has: `backfill_details_hourly` adds a few
-        # hundred maps an hour, and a dataset at most a day behind the outcomes is not what
-        # limits anything here. 04:05 UTC is the quietest hour for professional Dota, and it
-        # is thirteen minutes after the 03:52 normalization it wants to read the output of.
-        #
-        # `prematch` and `featurize` are one job rather than two crons, because a `featurize`
-        # that runs without a fresh `prematch` writes a prior of 0.5 into rows that sit beside
-        # measured ones - see `app.workers.training_set` for why that is worse than a stale
-        # table.
-        # Measured 2026-09-01 on 6112 stored payloads: 11s to rebuild pre-match features and
-        # 42s to rebuild every snapshot, 53s for the pair. The timeout is far above that on
-        # purpose - the cost grows with the archive and the archive is the point - but it is
-        # a bound rather than arq's default 300s, which this would outgrow without saying so.
-        cron(refresh_training_set, hour=4, minute=5, max_tries=1, timeout=1800),
-        # Phase 7. Once a day rather than hourly: the window is seven days wide, so an
-        # hourly verdict would be the same verdict twenty-four times, and an alert that
-        # repeats itself all day is one people learn to close.
-        cron(check_calibration_drift, hour=6, minute=17, max_tries=2),
-    ]
+    cron_jobs: ClassVar[list[Any]] = stratz_gated(
+        [
+            # Live loop: every 30s, per spec section 2.4.
+            cron(poll_live_games, second={0, 30}, run_at_startup=True, max_tries=1),
+            # Liquipedia: no more than hourly, everything else served from cache.
+            cron(sync_liquipedia, minute=7, max_tries=2),
+            # Pick up matches that finished since the last pass. Hourly and cheap: one call when
+            # nothing is new. Unlike the historical backfill this one is safe to schedule - it
+            # cannot run away, because it stops the moment it reaches what is already stored.
+            # Without it the dataset ends on the day the backfill started and no prediction the
+            # live loop makes can ever be scored against an outcome.
+            cron(catch_up_pro_matches, minute=23, max_tries=2),
+            # Ask STRATZ directly about the matches we have already predicted. The summary
+            # feed reaches them eventually; "eventually" is not a property the accuracy
+            # dashboard or the drift alert can be built on, and a served prediction nobody
+            # ever scores is a prediction that taught us nothing.
+            cron(
+                resolve_prediction_outcomes,
+                minute=41,
+                max_tries=2,
+                timeout=stratz_slice_timeout(OUTCOMES_PER_RUN),
+            ),
+            # The history backfill, which had no schedule at all and only advanced when somebody
+            # ran the CLI. 23688 maps remain, so at a few hundred an hour it is days of work that
+            # nobody should have to babysit.
+            #
+            # Bounded per run rather than left to fetch until it is refused - see
+            # `DETAILS_PER_HOUR`. Never retried: a failed slice is not worth a second helping of
+            # somebody else's quota, and the next hour picks up exactly where it stopped.
+            cron(
+                backfill_details_hourly,
+                minute=11,
+                max_tries=1,
+                timeout=stratz_slice_timeout(DETAILS_PER_HOUR),
+            ),
+            # Behind the outcome resolver, because it is what finishes that job: the resolver
+            # stores a payload and this is the step that reads the outcome out of it. Without it
+            # the chain ended in the raw table - every job green, the accuracy dashboard empty,
+            # and nothing anywhere saying why.
+            #
+            # The gap used to be a guess. It is now the resolver's worst case: `OUTCOMES_PER_RUN`
+            # maps at the STRATZ throttle is 400 seconds, so :41 + 6m40s = :47:40 - which the old
+            # :47 slot sat *inside*, and a full queue would have run straight past it. :52 clears
+            # it with four minutes to spare. Measured 2026-09-01: real runs took 288s and 228s,
+            # and this pass itself takes 61s over 28595 summary and 6001 detail payloads, so the
+            # pair fits inside the hour with room left.
+            #
+            # Still two crons rather than the resolver enqueueing this one, deliberately: a
+            # resolver that dies should not take normalization with it, and missing the gap costs
+            # an hour of latency, not a row - both jobs are idempotent.
+            cron(normalize_stored_payloads, minute=52, max_tries=1),
+            # The last link that only moved when a person typed it. Once a day rather than hourly
+            # because that is the cadence the data has: `backfill_details_hourly` adds a few
+            # hundred maps an hour, and a dataset at most a day behind the outcomes is not what
+            # limits anything here. 04:05 UTC is the quietest hour for professional Dota, and it
+            # is thirteen minutes after the 03:52 normalization it wants to read the output of.
+            #
+            # `prematch` and `featurize` are one job rather than two crons, because a `featurize`
+            # that runs without a fresh `prematch` writes a prior of 0.5 into rows that sit beside
+            # measured ones - see `app.workers.training_set` for why that is worse than a stale
+            # table.
+            # Measured 2026-09-01 on 6112 stored payloads: 11s to rebuild pre-match features and
+            # 42s to rebuild every snapshot, 53s for the pair. The timeout is far above that on
+            # purpose - the cost grows with the archive and the archive is the point - but it is
+            # a bound rather than arq's default 300s, which this would outgrow without saying so.
+            cron(refresh_training_set, hour=4, minute=5, max_tries=1, timeout=1800),
+            # Phase 7. Once a day rather than hourly: the window is seven days wide, so an
+            # hourly verdict would be the same verdict twenty-four times, and an alert that
+            # repeats itself all day is one people learn to close.
+            cron(check_calibration_drift, hour=6, minute=17, max_tries=2),
+        ],
+        stratz_available=get_settings().stratz_available,
+    )
     on_startup = startup
     on_shutdown = shutdown
     max_jobs = 10
