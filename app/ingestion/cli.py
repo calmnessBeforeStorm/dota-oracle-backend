@@ -124,6 +124,7 @@ async def cmd_resolve_outcomes(limit: int) -> None:
     print(f"requested:       {report.requested}")
     print(f"fetched:         {report.fetched}")
     print(f"failed:          {report.failed}")
+    print(f"not published:   {report.unavailable}  (asked again on a later run)")
     print(f"still unscored:  {report.remaining}")
     print(f"stopped because: {report.stopped_because}")
     print("run `normalize` next: the outcome is read out of the stored payload there.")

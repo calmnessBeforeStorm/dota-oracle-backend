@@ -32,7 +32,7 @@ from app.db.session import get_session_factory
 from app.ingestion.clients.base import RateLimitedError
 from app.ingestion.clients.opendota import OpenDotaClient
 from app.ingestion.clients.stratz import StratzClient
-from app.ingestion.repository import upsert_raw_matches
+from app.ingestion.repository import match_id_of, upsert_raw_matches
 from app.ingestion.sources import RawSource
 
 log = get_logger(__name__)
@@ -56,6 +56,9 @@ class DetailsReport:
     requested: int = 0
     fetched: int = 0
     failed: int = 0
+    #: Answered, but with nothing to describe yet - a match still being played. Kept apart
+    #: from `fetched` so a run is not reported as having stored payloads it did not.
+    unavailable: int = 0
     remaining: int = 0
     stopped_because: str = "finished the list"
 
@@ -64,6 +67,7 @@ class DetailsReport:
             "requested": self.requested,
             "fetched": self.fetched,
             "failed": self.failed,
+            "unavailable": self.unavailable,
             "remaining": self.remaining,
             "stopped_because": self.stopped_because,
         }
@@ -140,6 +144,14 @@ async def fetch_details(
                 )
                 log.warning("details.giving_up", **report.as_log_fields())
                 break
+            continue
+
+        # Nothing to store: the provider has no data for this match yet. Not a failure - the
+        # upstream answered - so it neither counts toward giving up nor pretends to be a
+        # fetched payload. It will be asked about again on a later run.
+        if match_id_of(payload) is None:
+            report.unavailable += 1
+            consecutive_failures = 0
             continue
 
         # Commit per match: the run takes hours and will be interrupted, and a call already

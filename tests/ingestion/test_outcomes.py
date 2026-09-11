@@ -242,3 +242,54 @@ class TestWhenStratzIsUnreachable:
 
         assert outcome_source(stratz_available=True) == RawSource.STRATZ_MATCH
         assert outcome_source(stratz_available=False) == RawSource.OPENDOTA_MATCH
+
+
+class TestNotYetPublished:
+    """Matches that neither provider can describe yet.
+
+    Measured 2026-09-11: of twenty matches the resolver asked OpenDota about, eleven came back
+    404, and STRATZ - reachable from a different host - did not know them either, while it
+    did know the ones OpenDota answered. They were still being played.
+    """
+
+    async def test_a_match_still_on_air_is_not_asked_about(self, session: AsyncSession) -> None:
+        # The poller predicts every thirty seconds for as long as a match is live, so a
+        # prediction minutes old means it is still running. Asking about it spends quota to
+        # learn nothing, and on OpenDota the answer is a 404.
+        session.add(
+            Prediction(
+                match_id=500,
+                minute=12,
+                predicted_at=datetime.now(UTC) - timedelta(minutes=1),
+                model_version="live-v1",
+                p_radiant=0.6,
+                features={},
+            )
+        )
+        await add_prediction(session, 100)
+        await session.flush()
+
+        assert await select_unresolved_predictions(session, 10) == [100]
+
+    async def test_an_empty_payload_is_not_a_failure(
+        self, session: AsyncSession, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Twenty-one unpublished matches in a row used to trip "upstream failed twenty times"
+        # and end the run before it reached anything it could resolve.
+        for match_id in range(1, 23):
+            await add_prediction(session, match_id)
+        await session.commit()
+
+        class Unpublished:
+            async def match(self, match_id: int) -> dict[str, Any]:
+                return {} if match_id > 1 else {"match_id": 1, "radiant_win": True}
+
+        client = Unpublished()
+        report = await resolve_outcomes(
+            client, sessionmaker, limit=50, source=RawSource.OPENDOTA_MATCH
+        )
+
+        assert report.failed == 0
+        assert report.unavailable == 21
+        assert report.fetched == 1
+        assert report.stopped_because == "finished the list"

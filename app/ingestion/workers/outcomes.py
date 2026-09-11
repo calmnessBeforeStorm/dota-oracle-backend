@@ -18,9 +18,10 @@ because its match payload is the same one phase 3 builds snapshots from, so reso
 outcome also makes that map trainable instead of merely scored.
 """
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import exists, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
@@ -35,6 +36,12 @@ from app.ingestion.sources import RawSource
 from app.ingestion.workers.details import DetailsReport, MatchDetailSource, fetch_details
 
 log = get_logger(__name__)
+
+#: A match predicted this recently is still on air: the poller predicts every thirty seconds
+#: for as long as a match is in the live feed. Asking a provider about it spends quota to
+#: learn nothing - measured 2026-09-11, eleven of twenty asked were unpublished, and STRATZ
+#: did not know them either. Ten minutes is generous against a thirty-second cadence.
+STILL_ON_AIR = timedelta(minutes=10)
 
 #: Payload sources that carry a match outcome `normalize` can read.
 OUTCOME_SOURCES = (RawSource.STRATZ_MATCH, RawSource.OPENDOTA_MATCH)
@@ -89,6 +96,7 @@ def _unresolved() -> Any:
         select(Prediction.match_id)
         .where(~outcome_known, ~payload_held)
         .group_by(Prediction.match_id)
+        .having(func.max(Prediction.predicted_at) < datetime.now(UTC) - STILL_ON_AIR)
     )
 
 

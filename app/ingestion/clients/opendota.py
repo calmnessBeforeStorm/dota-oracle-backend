@@ -2,6 +2,8 @@
 
 from typing import Any
 
+import httpx
+
 from app.core.config import get_settings
 from app.ingestion.clients.base import BaseClient
 
@@ -24,8 +26,19 @@ class OpenDotaClient(BaseClient):
         return await self.get_json("/proMatches", less_than_match_id=less_than_match_id)  # type: ignore[no-any-return]
 
     async def match(self, match_id: int) -> dict[str, Any]:
-        """One call per match. `version is None` means unparsed: no per-minute series."""
-        return await self.get_json(f"/matches/{match_id}")  # type: ignore[no-any-return]
+        """One call per match. `version is None` means unparsed: no per-minute series.
+
+        A 404 comes back as an empty payload, the same shape STRATZ gives for an unknown id.
+        It means the match is not published - almost always because it is still being
+        played - and treating it as a failure made it count toward the caller's
+        give-up-after-twenty rule, which a busy hour of live matches would trip.
+        """
+        try:
+            return await self.get_json(f"/matches/{match_id}")  # type: ignore[no-any-return]
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return {}
+            raise
 
     async def leagues(self) -> list[dict[str, Any]]:
         """`tier` here (premium/professional/amateur) is only a fallback for Tier 1 marking."""
