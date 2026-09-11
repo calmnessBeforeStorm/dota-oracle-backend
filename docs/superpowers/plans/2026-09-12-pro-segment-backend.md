@@ -60,7 +60,7 @@
   - `PRO_VALVE_TIERS: tuple[str, ...] = ("professional", "premium")`
   - `EXCLUDED_VALVE_TIERS: tuple[str, ...] = ("excluded", "amateur")`
   - `VALVE_TIERS: tuple[str, ...]` (both of the above)
-  - `display_tier(liquipedia_tier: str | None, valve_tier: str | None) -> str`
+  - `display_tier(valve_tier: str | None, liquipedia_tier: str | None) -> str` — every function of the rule takes Valve's tier first
   - `segment_of(valve_tier: str | None, liquipedia_tier: str | None) -> Segment | None`
   - `is_pro(valve_tier: str | None) -> bool`
 
@@ -107,19 +107,21 @@ def test_segment_of(valve: str | None, liquipedia: str | None, expected: str | N
 
 
 @pytest.mark.parametrize(
-    ("liquipedia", "valve", "expected"),
+    ("valve", "liquipedia", "expected"),
     [
-        ("tier1", "professional", "tier1"),
-        ("tier3", "premium", "tier3"),
-        ("unknown", "premium", "tier1"),
-        (None, "premium", "tier1"),
-        (None, "professional", "unknown"),
-        ("unknown", None, "unknown"),
-        ("tier2", "excluded", "tier2"),
+        ("professional", "tier1", "tier1"),
+        ("premium", "tier3", "tier3"),
+        ("premium", "unknown", "tier1"),
+        ("premium", None, "tier1"),
+        ("professional", None, "unknown"),
+        (None, "unknown", "unknown"),
+        ("excluded", "tier2", "tier2"),
     ],
 )
-def test_display_tier(liquipedia: str | None, valve: str | None, expected: str) -> None:
-    assert display_tier(liquipedia, valve) == expected
+def test_display_tier(valve: str | None, liquipedia: str | None, expected: str) -> None:
+    # Same argument order as segment_of: Valve first. Both are `str | None`, so a swap would
+    # type-check; one order everywhere is what keeps it from happening.
+    assert display_tier(valve, liquipedia) == expected
 
 
 @pytest.mark.parametrize(
@@ -170,7 +172,7 @@ VALVE_TIERS: tuple[str, ...] = PRO_VALVE_TIERS + EXCLUDED_VALVE_TIERS
 LIQUIPEDIA_UNKNOWN = "unknown"
 
 
-def display_tier(liquipedia_tier: str | None, valve_tier: str | None) -> str:
+def display_tier(valve_tier: str | None, liquipedia_tier: str | None) -> str:
     """The tier a reader sees.
 
     Liquipedia's, except that an unmapped `premium` league reads as Tier 1: section 3 of the
@@ -194,7 +196,7 @@ def segment_of(valve_tier: str | None, liquipedia_tier: str | None) -> Segment |
     knowledge, and counting it as amateur or as pro would both be inventions.
     """
     if valve_tier in PRO_VALVE_TIERS:
-        return "tier1" if display_tier(liquipedia_tier, valve_tier) == "tier1" else "pro"
+        return "tier1" if display_tier(valve_tier, liquipedia_tier) == "tier1" else "pro"
     if valve_tier in EXCLUDED_VALVE_TIERS:
         return "excluded"
     return None
@@ -228,7 +230,7 @@ git commit -m "add the segment rule: Valve gates, Liquipedia ranks"
 - Produces:
   - `League.valve_tier: Mapped[str | None]` (String(16))
   - `Prediction.league_id: Mapped[int | None]` (BigInteger, no FK), `Prediction.valve_tier: Mapped[str | None]` (String(16))
-  - `display_tier_expr(liquipedia_tier: ColumnElement[Any], valve_tier: ColumnElement[Any]) -> ColumnElement[Any]`
+  - `display_tier_expr(valve_tier: ColumnElement[Any], liquipedia_tier: ColumnElement[Any]) -> ColumnElement[Any]`
   - `segment_expr(valve_tier: ColumnElement[Any], liquipedia_tier: ColumnElement[Any]) -> ColumnElement[Any]`
 
 - [ ] **Step 1: Write the failing test**
@@ -256,12 +258,12 @@ async def test_the_sql_rule_agrees_with_the_python_rule(session: AsyncSession) -
                 await session.execute(
                     select(
                         segment_expr(valve_param, liquipedia_param),
-                        display_tier_expr(liquipedia_param, valve_param),
+                        display_tier_expr(valve_param, liquipedia_param),
                     )
                 )
             ).one()
             assert row[0] == segment_of(valve, liquipedia), (valve, liquipedia)
-            assert row[1] == display_tier(liquipedia, valve), (valve, liquipedia)
+            assert row[1] == display_tier(valve, liquipedia), (valve, liquipedia)
 ```
 
 Move the new imports to the top import block of the file (ruff `I` will require it).
@@ -285,7 +287,7 @@ from sqlalchemy import ColumnElement, case, func
 
 ```python
 def display_tier_expr(
-    liquipedia_tier: ColumnElement[Any], valve_tier: ColumnElement[Any]
+    valve_tier: ColumnElement[Any], liquipedia_tier: ColumnElement[Any]
 ) -> ColumnElement[Any]:
     """`display_tier` in SQL. A LEFT JOIN that found no league yields NULL: read as unknown."""
     known = func.coalesce(liquipedia_tier, LIQUIPEDIA_UNKNOWN)
@@ -302,7 +304,7 @@ def segment_expr(
     return case(
         (
             valve_tier.in_(PRO_VALVE_TIERS)
-            & (display_tier_expr(liquipedia_tier, valve_tier) == "tier1"),
+            & (display_tier_expr(valve_tier, liquipedia_tier) == "tier1"),
             "tier1",
         ),
         (valve_tier.in_(PRO_VALVE_TIERS), "pro"),
@@ -580,9 +582,13 @@ class _Once:
 
 
 class _FakeArq:
-    def __init__(self, *, result: object = object()) -> None:
+    def __init__(self, *, result: object = object(), window_held: bool = False) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self._result = result
+        self._held = window_held
+
+    async def exists(self, name: str) -> int:
+        return int(self._held and name == THROTTLE_KEY)
 
     async def enqueue_job(self, name: str, **kwargs: Any) -> object:
         self.calls.append((name, kwargs))
@@ -637,6 +643,14 @@ async def test_an_already_queued_request_is_reported_as_not_queued() -> None:
     assert await request_valve_tier_refresh({"redis": _FakeArq(result=None)}) is False
 
 
+async def test_a_closed_window_is_not_even_queued() -> None:
+    # Without this, a league missing from `/leagues` queues the job every tick: 120 runs an
+    # hour, each logging "skipped" - a light that is always on, which hides the real one.
+    arq = _FakeArq(window_held=True)
+    assert await request_valve_tier_refresh({"redis": arq}) is False
+    assert arq.calls == []
+
+
 async def test_no_redis_in_the_context_is_not_an_error() -> None:
     assert await request_valve_tier_refresh({}) is False
 
@@ -681,9 +695,10 @@ The live feed shows only professional leagues, and a league's Valve tier is know
 `/leagues` has been asked since the league appeared. Hourly alone would hide a new Tier 1
 tournament for up to an hour - a whole map - so the poller may also request a refresh.
 
-It may request one every tick, for a league OpenDota simply does not list. The throttle is
+It may want one every tick, for a league OpenDota simply does not list. The throttle is
 therefore inside the job, keyed in Redis, and holds whoever asked: at most one call per
-`REFRESH_EVERY_SECONDS`. `/leagues` is a megabyte, which is also why the poller enqueues this
+`REFRESH_EVERY_SECONDS`. The request checks the same key before queueing, so a closed window
+costs one EXISTS per tick rather than a job run and a log line. `/leagues` is a megabyte, which is also why the poller enqueues this
 rather than calling it inside its thirty-second tick.
 """
 
@@ -733,13 +748,18 @@ async def refresh_valve_tiers(ctx: dict[str, Any]) -> int:
 async def request_valve_tier_refresh(ctx: dict[str, Any]) -> bool:
     """Ask the worker for a refresh. True when a job was queued.
 
-    The fixed job id makes arq drop duplicates while one is queued; the job's own throttle
-    handles everything after that.
+    Nothing is queued while the throttle window is closed: a league OpenDota does not list
+    would otherwise queue a job every tick, and the worker would run it 120 times an hour only
+    to log "skipped". The fixed job id makes arq drop duplicates while one is waiting. arq's
+    pool and `get_redis()` point at the same database (host, port and db from one settings
+    object), so the key the job sets is the key checked here.
     """
     redis = ctx.get("redis")
     if redis is None:
         return False
     try:
+        if await redis.exists(THROTTLE_KEY):
+            return False
         job = await redis.enqueue_job(REFRESH_VALVE_TIERS_JOB, _job_id=REFRESH_VALVE_TIERS_JOB)
     except Exception as exc:
         log.warning("valve_tiers.enqueue_failed", error=str(exc))
@@ -1067,7 +1087,7 @@ In `_feed_entry`, add the parameter `valve_tier: str | None = None,` after `team
 
 ```python
         # What the reader sees, with the section 3 premium fallback applied.
-        "tier": display_tier(tier, valve_tier),
+        "tier": display_tier(valve_tier, tier),
         # What the API gates on. The poller keeps every game in the cache; `/matches/live`
         # decides what is public (design 2026-09-11-pro-segment).
         "valve_tier": valve_tier,
@@ -1401,7 +1421,7 @@ async def recent_matches(
     )
     if tiers:
         statement = statement.where(
-            display_tier_expr(League.tier, Prediction.valve_tier).in_(list(tiers))
+            display_tier_expr(Prediction.valve_tier, League.tier).in_(list(tiers))
         )
     match_ids = list((await session.scalars(statement)).all())
 ```
@@ -1445,7 +1465,7 @@ with:
         valve_tier = predicted_league.get(match_id, (None, None))[1]
 ```
 
-and in `RecentMatch(...)` replace `league_id=match.league_id,` with `league_id=match_league,` and `tier=tier or "unknown",` with `tier=display_tier(liquipedia_tier, valve_tier),`.
+and in `RecentMatch(...)` replace `league_id=match.league_id,` with `league_id=match_league,` and `tier=tier or "unknown",` with `tier=display_tier(valve_tier, liquipedia_tier),`.
 
 - [ ] **Step 4: Implement the route parameter**
 

@@ -87,7 +87,8 @@
 ### Правило сегмента
 
 Одна функция `segment_of(valve_tier, liquipedia_tier) -> "tier1" | "pro" | "excluded" | None`
-в `app/domain/segments.py`, рядом — `display_tier(liquipedia_tier, valve_tier)`:
+в `app/domain/segments.py`, рядом — `display_tier(valve_tier, liquipedia_tier)` (у всех функций правила тир Valve —
+первый аргумент: оба `str | None`, и перестановку типы не поймают):
 
 | `valve_tier` | `liquipedia_tier` | сегмент |
 |---|---|---|
