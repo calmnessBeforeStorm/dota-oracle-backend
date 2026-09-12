@@ -12,7 +12,7 @@ the feeds, and in SQL for the dashboard - and a test holds the two versions toge
 
 from typing import Any, Literal
 
-from sqlalchemy import ColumnElement, case, func
+from sqlalchemy import ColumnElement, SQLColumnExpression, case, func
 
 Segment = Literal["tier1", "pro", "excluded"]
 SEGMENTS: tuple[Segment, ...] = ("tier1", "pro", "excluded")
@@ -55,7 +55,7 @@ def segment_of(valve_tier: str | None, liquipedia_tier: str | None) -> Segment |
 
 
 def display_tier_expr(
-    valve_tier: ColumnElement[Any], liquipedia_tier: ColumnElement[Any]
+    valve_tier: SQLColumnExpression[Any], liquipedia_tier: SQLColumnExpression[Any]
 ) -> ColumnElement[Any]:
     """`display_tier` in SQL. A LEFT JOIN that found no league yields NULL: read as unknown."""
     known = func.coalesce(liquipedia_tier, LIQUIPEDIA_UNKNOWN)
@@ -66,7 +66,7 @@ def display_tier_expr(
 
 
 def segment_expr(
-    valve_tier: ColumnElement[Any], liquipedia_tier: ColumnElement[Any]
+    valve_tier: SQLColumnExpression[Any], liquipedia_tier: SQLColumnExpression[Any]
 ) -> ColumnElement[Any]:
     """`segment_of` in SQL. A NULL Valve tier falls through every branch to NULL."""
     return case(
