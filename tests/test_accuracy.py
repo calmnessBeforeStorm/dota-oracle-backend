@@ -9,10 +9,19 @@ perfect score.
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.accuracy import ScoredPrediction, load_scored, metrics_from, scored_versions
+from app.api.accuracy import (
+    ScoredPrediction,
+    load_scored,
+    metrics_from,
+    scored_versions,
+    segment_counts,
+    serving_progress,
+)
 from app.db.models.matches import Match
+from app.db.models.reference import League
 from app.db.models.training import Prediction
 
 BASE = datetime(2026, 8, 1, tzinfo=UTC)
@@ -32,6 +41,8 @@ async def add_prediction(
     *,
     version: str = VERSION,
     at: datetime | None = None,
+    league_id: int | None = None,
+    valve_tier: str | None = None,
 ) -> None:
     session.add(
         Prediction(
@@ -41,6 +52,8 @@ async def add_prediction(
             model_version=version,
             p_radiant=p_radiant,
             features={},
+            league_id=league_id,
+            valve_tier=valve_tier,
         )
     )
     await session.flush()
@@ -218,8 +231,6 @@ class TestTrainingStatus:
     async def test_progress_counts_every_predicted_match_not_only_scored_ones(
         self, session: AsyncSession
     ) -> None:
-        from app.api.accuracy import serving_progress
-
         session.add_all([Match(match_id=1, radiant_win=True), Match(match_id=2)])
         await session.flush()
         await add_prediction(session, 1, 5, 0.6, version="v1")
@@ -235,8 +246,6 @@ class TestTrainingStatus:
 
     @pytest.mark.asyncio
     async def test_a_version_that_never_served_has_no_progress(self, session: AsyncSession) -> None:
-        from app.api.accuracy import serving_progress
-
         progress = await serving_progress(session, "never-served")
 
         assert progress.predicted_matches == 0
@@ -248,3 +257,68 @@ class TestTrainingStatus:
         from app.api.routes.model import _training
 
         assert _training("baseline-logistic-0.2") is None
+
+
+async def seed_segments(session: AsyncSession) -> None:
+    """One scored match per segment, plus one whose Valve tier was never known."""
+    session.add_all([League(league_id=1, tier="tier1"), League(league_id=2)])
+    await session.flush()
+    for match_id in (1, 2, 3, 4):
+        await add_match(session, match_id, radiant_win=True)
+    await add_prediction(session, 1, 10, 0.7, league_id=1, valve_tier="professional")
+    await add_prediction(session, 2, 10, 0.6, league_id=2, valve_tier="professional")
+    await add_prediction(session, 3, 10, 0.4, league_id=3, valve_tier="excluded")
+    await add_prediction(session, 4, 10, 0.5, league_id=None, valve_tier=None)
+
+
+class TestSegments:
+    """Measured 11.09.2026: every scored prediction on production came from an amateur league.
+    A dashboard that pools them describes a domain the model never trained on."""
+
+    async def test_each_segment_scores_only_its_own_predictions(
+        self, session: AsyncSession
+    ) -> None:
+        await seed_segments(session)
+
+        assert [r.match_id for r in await load_scored(session, VERSION, "tier1")] == [1]
+        assert [r.match_id for r in await load_scored(session, VERSION, "pro")] == [2]
+        assert [r.match_id for r in await load_scored(session, VERSION, "excluded")] == [3]
+        # No segment means everything, as before - the drift check's old callers rely on it.
+        assert len(await load_scored(session, VERSION)) == 4
+
+    async def test_counts_list_every_segment_and_the_unsegmented(
+        self, session: AsyncSession
+    ) -> None:
+        await seed_segments(session)
+
+        counts, unsegmented = await segment_counts(session, VERSION)
+
+        assert [(c.segment, c.matches) for c in counts] == [
+            ("tier1", 1),
+            ("pro", 1),
+            ("excluded", 1),
+        ]
+        assert unsegmented == 1
+
+    async def test_an_empty_version_still_lists_all_three(self, session: AsyncSession) -> None:
+        counts, unsegmented = await segment_counts(session, "never-served")
+        assert [(c.segment, c.matches) for c in counts] == [
+            ("tier1", 0),
+            ("pro", 0),
+            ("excluded", 0),
+        ]
+        assert unsegmented == 0
+
+    async def test_progress_is_counted_inside_the_segment(self, session: AsyncSession) -> None:
+        await seed_segments(session)
+        session.add(Match(match_id=5))
+        await session.flush()
+        await add_prediction(session, 5, 3, 0.5, league_id=3, valve_tier="excluded")
+
+        progress = await serving_progress(session, VERSION, "excluded")
+
+        assert progress.predicted_matches == 2
+
+    def test_the_route_refuses_an_unknown_segment(self, client: TestClient) -> None:
+        response = client.get("/api/model/metrics", params={"segment": "everything"})
+        assert response.status_code == 422

@@ -225,6 +225,13 @@ class ModelTraining(BaseModel):
     feature_count: int
 
 
+class SegmentCount(BaseModel):
+    """Scored matches of one version in one segment (design 2026-09-11-pro-segment)."""
+
+    segment: str
+    matches: int
+
+
 class ModelMetrics(BaseModel):
     """F6: public calibration dashboard (spec section 8.1).
 
@@ -259,6 +266,14 @@ class ModelMetrics(BaseModel):
     reliability: list[ReliabilityBin] = []
     #: Other versions that have scored predictions, so the page can offer them.
     versions: list[ModelVersionInfo] = []
+    #: Which slice the numbers above describe: tier1, pro or excluded. Everything above is
+    #: computed inside it, including `predicted_matches` and `awaiting_outcome`.
+    segment: str = "tier1"
+    #: Scored matches of this version per segment - all three, zeros included - so the page can
+    #: say where the data is when the selected slice has none.
+    segments: list[SegmentCount] = []
+    #: Scored matches whose league's Valve tier was unknown when predicted: in no segment.
+    unsegmented_matches: int = 0
 
 
 class TournamentStageInfo(BaseModel):
