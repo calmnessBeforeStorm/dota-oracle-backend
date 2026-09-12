@@ -1,5 +1,7 @@
 """F1/F2: live feed and match card (spec section 8.1)."""
 
+from typing import Any
+
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -22,6 +24,7 @@ from app.db.models.matches import Match, Series
 from app.db.models.reference import Team
 from app.db.models.training import Prediction
 from app.db.session import get_session
+from app.domain.segments import is_pro
 from app.ingestion.workers.live_poller import LIVE_FEED_KEY
 from app.schemas.common import (
     LiveMatch,
@@ -35,9 +38,24 @@ from app.schemas.common import (
 router = APIRouter(prefix="/matches", tags=["matches"])
 
 
+def public_feed(entries: list[dict[str, Any]], tier: str | None) -> list[dict[str, Any]]:
+    """The part of the poller's feed the product shows.
+
+    Only professional and premium leagues: the service promises Tier 1 predictions, and an
+    empty feed at four in the morning is honest where a feed of amateur cups is not. The
+    poller keeps predicting the rest - the accuracy dashboard uses them as a control group -
+    so the gate lives here, not there. `tier` narrows further and is compared with the
+    display tier the poller wrote.
+    """
+    visible = [entry for entry in entries if is_pro(entry.get("valve_tier"))]
+    if tier:
+        visible = [entry for entry in visible if entry.get("tier") == tier]
+    return visible
+
+
 @router.get("/live", response_model=list[LiveMatch])
 async def live_matches(tier: str | None = None) -> list[LiveMatch]:
-    """Whatever the poller last saw.
+    """Whatever the poller last saw, minus leagues outside the professional scene.
 
     Served from the cache the poller writes rather than recomputed, and that cache expires
     after two minutes: an empty feed is honest, a stale one looks live and is not.
@@ -45,11 +63,7 @@ async def live_matches(tier: str | None = None) -> list[LiveMatch]:
     cached = await get_redis().get(LIVE_FEED_KEY)
     if not cached:
         return []
-
-    entries = orjson.loads(cached)
-    if tier:
-        entries = [entry for entry in entries if entry.get("tier") == tier]
-    return [LiveMatch.model_validate(entry) for entry in entries]
+    return [LiveMatch.model_validate(entry) for entry in public_feed(orjson.loads(cached), tier)]
 
 
 @router.get("/recent", response_model=list[RecentMatch])
