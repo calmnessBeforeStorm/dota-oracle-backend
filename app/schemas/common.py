@@ -57,6 +57,13 @@ class LiveMatch(BaseModel):
     model_version: str
     minute: int = 0
     tier: str = "unknown"
+    valve_tier: str | None = Field(
+        default=None,
+        description=(
+            "Valve's league tier from OpenDota /leagues. The public feed shows only "
+            "professional and premium leagues; null means the tier is not known yet."
+        ),
+    )
     team_history: int = Field(
         default=0,
         description=(
