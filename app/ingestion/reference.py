@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.logging import get_logger
 from app.db.models.reference import Hero, League, Player
+from app.domain.segments import VALVE_TIERS
 from app.ingestion.repository import utcnow
 
 log = get_logger(__name__)
@@ -130,17 +131,28 @@ async def refresh_pro_players(
 
 
 def parse_leagues(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """`/leagues` gives an id and a name for every league OpenDota knows.
+    """`/leagues` gives an id, a name and Valve's own tier for every league OpenDota knows.
 
-    Only the name is taken. `tier` on this endpoint is Valve's own label, which is not the
-    Tier 1 classification the product means (spec section 3) - that one is decided against
-    Liquipedia by `map-leagues`, and overwriting it here would undo hand-checked work.
+    The tier goes to `valve_tier`, never to `tier`: `tier` is the Liquipedia classification
+    that `map-leagues` decides and a human checks, and it must survive this pass untouched.
+    Valve's label is what separates professional leagues from amateur ones in the live feed
+    (design 2026-09-11-pro-segment). An unrecognised value is stored as unknown, not guessed.
     """
-    return [
-        {"league_id": int(row["leagueid"]), "name": name}
-        for row in payload
-        if row.get("leagueid") and (name := row.get("name"))
-    ]
+    rows: list[dict[str, Any]] = []
+    for row in payload:
+        league_id = row.get("leagueid")
+        name = row.get("name")
+        if not league_id or not name:
+            continue
+        tier = row.get("tier")
+        rows.append(
+            {
+                "league_id": int(league_id),
+                "name": name,
+                "valve_tier": tier if tier in VALVE_TIERS else None,
+            }
+        )
+    return rows
 
 
 async def refresh_league_names(client: LeagueSource, session_factory: Any) -> int:
@@ -150,11 +162,11 @@ async def refresh_league_names(client: LeagueSource, session_factory: Any) -> in
     id and no name for good: Valve's scoreboard does not carry one, and `/proMatches` only
     covers leagues whose matches reach that endpoint.
 
-    Names only. The tier, Liquipedia slug, prize pool and dates belong to `map-leagues`,
-    which writes exactly those columns and never `name` - so refreshing the name here cannot
-    undo hand-checked classification work. Both writers of `name` (this pass and the
-    `/proMatches` summaries) read the same provider, so the newer answer simply wins, which
-    is what a league that has been renamed needs.
+    Names and Valve's tier only. The Liquipedia tier, slug, prize pool and dates belong to
+    `map-leagues`, which writes exactly those columns and never `name` or `valve_tier` - so
+    refreshing here cannot undo hand-checked classification work. Both writers of `name`
+    (this pass and the `/proMatches` summaries) read the same provider, so the newer answer
+    simply wins, which is what a league that has been renamed needs.
     """
     rows = parse_leagues(await client.leagues())
     async with session_factory() as session:

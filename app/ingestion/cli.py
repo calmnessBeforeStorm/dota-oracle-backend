@@ -480,7 +480,9 @@ def main() -> None:
         help="rebuild pre-match features and player ratings from every stored match",
     )
 
-    sub.add_parser("reference", help="load hero constants and pro-player names (two calls)")
+    sub.add_parser(
+        "reference", help="load heroes, pro-player names and leagues with Valve tiers (3 calls)"
+    )
 
     sub.add_parser("status", help="show checkpoint and raw row counts")
 

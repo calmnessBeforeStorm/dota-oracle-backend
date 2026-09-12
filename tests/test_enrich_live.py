@@ -19,7 +19,7 @@ from app.db.models.matches import Match
 from app.db.models.raw import RawLiveSnapshot
 from app.db.models.reference import League, Team
 from app.ingestion.enrich_live import enrich_from_snapshots
-from app.ingestion.reference import refresh_league_names
+from app.ingestion.reference import parse_leagues, refresh_league_names
 
 BASE = datetime(2026, 9, 1, tzinfo=UTC)
 
@@ -32,10 +32,10 @@ class _FakeLeagues:
 
     async def leagues(self) -> list[dict[str, Any]]:
         if self._nameless:
-            return [{"leagueid": 17599, "name": None}]
+            return [{"leagueid": 17599, "name": None, "tier": "professional"}]
         return [
-            {"leagueid": 17599, "name": "Ultras Dota Pro League 2025-26"},
-            {"leagueid": 18445, "name": "Destiny League"},
+            {"leagueid": 17599, "name": "Ultras Dota Pro League 2025-26", "tier": "excluded"},
+            {"leagueid": 18445, "name": "Destiny League", "tier": "professional"},
         ]
 
 
@@ -213,3 +213,32 @@ class TestLeagueNames:
     async def test_skips_a_league_with_no_name(self, session: AsyncSession) -> None:
         written = await refresh_league_names(_FakeLeagues(nameless=True), lambda: _Once(session))
         assert written == 0
+
+    async def test_stores_valve_tier_beside_the_liquipedia_one(self, session: AsyncSession) -> None:
+        # Two columns, two owners: `map-leagues` owns `tier`, `/leagues` owns `valve_tier`.
+        session.add(League(league_id=17599, tier="tier1"))
+        await session.flush()
+        await refresh_league_names(_FakeLeagues(), lambda: _Once(session))
+        league = (
+            await session.execute(select(League).where(League.league_id == 17599))
+        ).scalar_one()
+        assert league.tier == "tier1"
+        assert league.valve_tier == "excluded"
+
+    async def test_a_tier_valve_withdraws_is_cleared(self, session: AsyncSession) -> None:
+        # The column holds the current label; a stale "professional" would keep an amateur
+        # league in the feed.
+        session.add(League(league_id=18445, valve_tier="professional"))
+        await session.flush()
+
+        class _NoTier(_FakeLeagues):
+            async def leagues(self) -> list[dict[str, Any]]:
+                return [{"leagueid": 18445, "name": "Destiny League", "tier": None}]
+
+        await refresh_league_names(_NoTier(), lambda: _Once(session))
+        tier = await session.scalar(select(League.valve_tier).where(League.league_id == 18445))
+        assert tier is None
+
+    def test_an_unrecognised_valve_tier_is_not_stored(self) -> None:
+        rows = parse_leagues([{"leagueid": 1, "name": "x", "tier": "legendary"}])
+        assert rows[0]["valve_tier"] is None
