@@ -69,13 +69,19 @@ async def live_matches(tier: str | None = None) -> list[LiveMatch]:
 @router.get("/recent", response_model=list[RecentMatch])
 async def recent(
     limit: int = Query(default=20, ge=1, le=50),
+    tiers: str | None = Query(
+        default=None,
+        pattern=r"^(tier1|tier2|tier3|unknown)(,(tier1|tier2|tier3|unknown))*$",
+        description="Comma-separated display tiers, e.g. tier1,unknown",
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> list[RecentMatch]:
-    """Matches we predicted and then saw finish, newest first.
+    """Matches we predicted in professional leagues and then saw finish, newest first.
 
     Declared above `/{match_id}`, or `recent` is swallowed by it as a match id.
     """
-    return await recent_matches(session, limit=limit)
+    wanted = tiers.split(",") if tiers else None
+    return await recent_matches(session, limit=limit, tiers=wanted)
 
 
 @router.get("/{match_id}", response_model=MatchDetail)

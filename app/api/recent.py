@@ -3,8 +3,11 @@
 The home screen is built around the probability of a running match, and Tier 1 matches run
 a few hours a day. This feed is what the screen shows the rest of the time, which makes it
 subject to the same honesty rules as the accuracy dashboard: no "the model got it right"
-verdict, and no substituting a neighbouring minute under someone else's caption.
+verdict, and no substituting a neighbouring minute under someone else's caption. Only matches
+predicted in professional leagues appear (design 2026-09-11-pro-segment).
 """
+
+from collections.abc import Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.matches import Match, Series
 from app.db.models.reference import League, Team
 from app.db.models.training import Prediction
+from app.domain.segments import PRO_VALVE_TIERS, display_tier, display_tier_expr
 from app.schemas.common import (
     PredictionPoint,
     RecentMatch,
@@ -58,20 +62,31 @@ def thin(curve: list[PredictionPoint], target: int = 30) -> list[PredictionPoint
     return picked
 
 
-async def recent_matches(session: AsyncSession, limit: int = 20) -> list[RecentMatch]:
-    """Finished matches we predicted, newest first."""
-    match_ids = list(
-        (
-            await session.scalars(
-                select(Match.match_id)
-                .join(Prediction, Prediction.match_id == Match.match_id)
-                .where(Match.radiant_win.is_not(None))
-                .group_by(Match.match_id, Match.start_time)
-                .order_by(Match.start_time.desc().nulls_last(), Match.match_id.desc())
-                .limit(limit)
-            )
-        ).all()
+async def recent_matches(
+    session: AsyncSession, limit: int = 20, tiers: Sequence[str] | None = None
+) -> list[RecentMatch]:
+    """Finished matches we predicted in professional leagues, newest first.
+
+    `tiers` filters on the display tier - Liquipedia's, with an unmapped `premium` league
+    reading as Tier 1 - and is applied here rather than in the browser: twenty newest matches
+    can hold no Tier 1 at all while older ones do.
+    """
+    # A skeleton match has no league; the poller wrote the one it saw on every prediction.
+    league_id = func.coalesce(Match.league_id, Prediction.league_id)
+    statement = (
+        select(Match.match_id)
+        .join(Prediction, Prediction.match_id == Match.match_id)
+        .outerjoin(League, League.league_id == league_id)
+        .where(Match.radiant_win.is_not(None), Prediction.valve_tier.in_(PRO_VALVE_TIERS))
+        .group_by(Match.match_id, Match.start_time)
+        .order_by(Match.start_time.desc().nulls_last(), Match.match_id.desc())
+        .limit(limit)
     )
+    if tiers:
+        statement = statement.where(
+            display_tier_expr(Prediction.valve_tier, League.tier).in_(list(tiers))
+        )
+    match_ids = list((await session.scalars(statement)).all())
     if not match_ids:
         return []
 
@@ -79,6 +94,25 @@ async def recent_matches(session: AsyncSession, limit: int = 20) -> list[RecentM
         row.match_id: row
         for row in (await session.scalars(select(Match).where(Match.match_id.in_(match_ids)))).all()
     }
+
+    # One league and one Valve tier per match: all its predictions come from the same league.
+    predicted_league: dict[int, tuple[int | None, str | None]] = {
+        int(match_id): (league, valve)
+        for match_id, league, valve in (
+            await session.execute(
+                select(
+                    Prediction.match_id,
+                    func.max(Prediction.league_id),
+                    func.max(Prediction.valve_tier),
+                )
+                .where(Prediction.match_id.in_(match_ids))
+                .group_by(Prediction.match_id)
+            )
+        ).all()
+    }
+
+    def league_of(match: Match) -> int | None:
+        return match.league_id or predicted_league.get(match.match_id, (None, None))[0]
 
     curves: dict[int, list[PredictionPoint]] = {match_id: [] for match_id in match_ids}
     # Version is kept per minute, not per match. A live match can be predicted by two
@@ -126,7 +160,7 @@ async def recent_matches(session: AsyncSession, limit: int = 20) -> list[RecentM
         else {}
     )
 
-    league_ids = {match.league_id for match in matches.values() if match.league_id}
+    league_ids = {league for match in matches.values() if (league := league_of(match))}
     leagues: dict[int, tuple[str | None, str | None]] = (
         {
             int(league_id): (name, tier)
@@ -159,14 +193,16 @@ async def recent_matches(session: AsyncSession, limit: int = 20) -> list[RecentM
         match = matches[match_id]
         curve = curves[match_id]
         tenth = pick_tenth_minute(curve)
-        league_name, tier = leagues.get(match.league_id or 0, (None, None))
+        match_league = league_of(match)
+        league_name, liquipedia_tier = leagues.get(match_league or 0, (None, None))
+        valve_tier = predicted_league.get(match_id, (None, None))[1]
         series = series_rows.get(match.series_id or 0)
         result.append(
             RecentMatch(
                 match_id=match_id,
-                league_id=match.league_id,
+                league_id=match_league,
                 league_name=league_name,
-                tier=tier or "unknown",
+                tier=display_tier(valve_tier, liquipedia_tier),
                 radiant=TeamBrief(
                     team_id=match.radiant_team_id, name=names.get(match.radiant_team_id or 0)
                 ),

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.recent import pick_tenth_minute, recent_matches, thin
 from app.api.routes.matches import router as matches_router
 from app.db.models.matches import Match
+from app.db.models.reference import League
 from app.db.models.training import Prediction
 from app.schemas.common import PredictionPoint
 
@@ -31,6 +32,8 @@ async def add(
     minutes: list[int],
     *,
     start: datetime = BASE,
+    valve_tier: str | None = "professional",
+    league_id: int | None = None,
 ) -> None:
     session.add(Match(match_id=match_id, radiant_win=radiant_win, start_time=start))
     await session.flush()
@@ -43,6 +46,8 @@ async def add(
                 model_version=VERSION,
                 p_radiant=0.5 + minute / 200,
                 features={},
+                league_id=league_id,
+                valve_tier=valve_tier,
             )
         )
     await session.flush()
@@ -125,6 +130,50 @@ class TestRecentMatches:
             await add(session, match_id, True, [10], start=BASE + timedelta(hours=match_id))
         assert len(await recent_matches(session, limit=3)) == 3
 
+    async def test_hides_a_match_predicted_in_an_excluded_league(
+        self, session: AsyncSession
+    ) -> None:
+        await add(session, 1, True, [10], valve_tier="excluded")
+        assert await recent_matches(session) == []
+
+    async def test_hides_a_match_whose_valve_tier_was_unknown(self, session: AsyncSession) -> None:
+        await add(session, 1, True, [10], valve_tier=None)
+        assert await recent_matches(session) == []
+
+    async def test_filters_by_display_tier(self, session: AsyncSession) -> None:
+        session.add(League(league_id=100, name="DreamLeague Season 29", tier="tier1"))
+        await session.flush()
+        await add(session, 1, True, [10], league_id=100)
+        await add(session, 2, True, [10], start=BASE + timedelta(hours=1))
+
+        assert [r.match_id for r in await recent_matches(session, tiers=["tier1"])] == [1]
+        assert [r.match_id for r in await recent_matches(session, tiers=["unknown"])] == [2]
+        assert len(await recent_matches(session, tiers=["tier1", "unknown"])) == 2
+
+    async def test_an_unmapped_premium_league_is_tier1(self, session: AsyncSession) -> None:
+        session.add(League(league_id=200, name="The International 2027"))
+        await session.flush()
+        await add(session, 1, True, [10], valve_tier="premium", league_id=200)
+
+        rows = await recent_matches(session, tiers=["tier1"])
+
+        assert [r.match_id for r in rows] == [1]
+        assert rows[0].tier == "tier1"
+
+    async def test_takes_the_league_from_the_prediction_when_the_match_has_none(
+        self, session: AsyncSession
+    ) -> None:
+        # A skeleton match from a detail payload has no league_id (normalize invariant 13).
+        session.add(League(league_id=100, name="DreamLeague Season 29", tier="tier1"))
+        await session.flush()
+        await add(session, 1, True, [10], league_id=100)
+
+        row = (await recent_matches(session))[0]
+
+        assert row.league_id == 100
+        assert row.league_name == "DreamLeague Season 29"
+        assert row.tier == "tier1"
+
 
 class TestRoute:
     def test_route_is_registered(self, client: TestClient) -> None:
@@ -143,3 +192,7 @@ class TestRoute:
         # This is a home-screen feed; fifty cards is the ceiling, beyond it the endpoint
         # is an archive dump. Validation rejects the request before a session is touched.
         assert client.get("/api/matches/recent", params={"limit": 500}).status_code == 422
+
+    def test_refuses_an_unknown_tier(self, client: TestClient) -> None:
+        response = client.get("/api/matches/recent", params={"tiers": "tier1,tier9"})
+        assert response.status_code == 422
