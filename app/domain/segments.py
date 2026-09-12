@@ -10,7 +10,9 @@ So Valve gates and Liquipedia ranks. The rule lives here once - in Python for th
 the feeds, and in SQL for the dashboard - and a test holds the two versions together.
 """
 
-from typing import Literal
+from typing import Any, Literal
+
+from sqlalchemy import ColumnElement, case, func
 
 Segment = Literal["tier1", "pro", "excluded"]
 SEGMENTS: tuple[Segment, ...] = ("tier1", "pro", "excluded")
@@ -50,3 +52,30 @@ def segment_of(valve_tier: str | None, liquipedia_tier: str | None) -> Segment |
     if valve_tier in EXCLUDED_VALVE_TIERS:
         return "excluded"
     return None
+
+
+def display_tier_expr(
+    valve_tier: ColumnElement[Any], liquipedia_tier: ColumnElement[Any]
+) -> ColumnElement[Any]:
+    """`display_tier` in SQL. A LEFT JOIN that found no league yields NULL: read as unknown."""
+    known = func.coalesce(liquipedia_tier, LIQUIPEDIA_UNKNOWN)
+    return case(
+        ((known == LIQUIPEDIA_UNKNOWN) & (valve_tier == "premium"), "tier1"),
+        else_=known,
+    )
+
+
+def segment_expr(
+    valve_tier: ColumnElement[Any], liquipedia_tier: ColumnElement[Any]
+) -> ColumnElement[Any]:
+    """`segment_of` in SQL. A NULL Valve tier falls through every branch to NULL."""
+    return case(
+        (
+            valve_tier.in_(PRO_VALVE_TIERS)
+            & (display_tier_expr(valve_tier, liquipedia_tier) == "tier1"),
+            "tier1",
+        ),
+        (valve_tier.in_(PRO_VALVE_TIERS), "pro"),
+        (valve_tier.in_(EXCLUDED_VALVE_TIERS), "excluded"),
+        else_=None,
+    )

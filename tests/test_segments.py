@@ -6,8 +6,10 @@ International and almost nothing else - so Valve's tier can only say pro or not.
 """
 
 import pytest
+from sqlalchemy import String, literal, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.segments import display_tier, is_pro, segment_of
+from app.domain.segments import display_tier, display_tier_expr, is_pro, segment_expr, segment_of
 
 
 @pytest.mark.parametrize(
@@ -65,3 +67,26 @@ def test_display_tier(valve: str | None, liquipedia: str | None, expected: str) 
 )
 def test_is_pro(valve: str | None, expected: bool) -> None:
     assert is_pro(valve) is expected
+
+
+VALVE_VALUES = [None, "premium", "professional", "amateur", "excluded", "something-new"]
+LIQUIPEDIA_VALUES = [None, "unknown", "tier1", "tier2", "tier3"]
+
+
+async def test_the_sql_rule_agrees_with_the_python_rule(session: AsyncSession) -> None:
+    """Two copies of one rule. The dashboard reads the SQL one and the feed the Python one;
+    if they drift apart, a match is Tier 1 on one page and Pro on the next."""
+    for valve in VALVE_VALUES:
+        for liquipedia in LIQUIPEDIA_VALUES:
+            valve_param = literal(valve, String())
+            liquipedia_param = literal(liquipedia, String())
+            row = (
+                await session.execute(
+                    select(
+                        segment_expr(valve_param, liquipedia_param),
+                        display_tier_expr(valve_param, liquipedia_param),
+                    )
+                )
+            ).one()
+            assert row[0] == segment_of(valve, liquipedia), (valve, liquipedia)
+            assert row[1] == display_tier(valve, liquipedia), (valve, liquipedia)

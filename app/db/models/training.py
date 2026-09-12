@@ -71,6 +71,12 @@ class Prediction(Base):
     model_version: Mapped[str] = mapped_column(String(64), nullable=False)
     p_radiant: Mapped[float] = mapped_column(Float, nullable=False)
     features: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    #: The league as the poller saw it. Needed because an unscored match may have no row in
+    #: `matches` at all yet (normalize invariant 13). No FK, like `match_id`: the log is written
+    #: before the normalized layer knows the match, and must not depend on it.
+    league_id: Mapped[int | None] = mapped_column(BigInteger)
+    #: `leagues.valve_tier` at the moment the prediction was served. Never rewritten.
+    valve_tier: Mapped[str | None] = mapped_column(String(16))
 
 
 class MatchPrematch(Base):
