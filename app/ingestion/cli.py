@@ -34,6 +34,7 @@ from app.ingestion.normalize import (
 )
 from app.ingestion.reference import refresh_heroes, refresh_league_names, refresh_pro_players
 from app.ingestion.repository import count_raw_matches, get_checkpoint
+from app.ingestion.segments_backfill import backfill_segments
 from app.ingestion.sources import Checkpoint, RawSource
 from app.ingestion.stages import link_series_to_stages
 from app.ingestion.workers.backfill import catch_up, run_backfill
@@ -171,6 +172,17 @@ async def cmd_reference() -> None:
     print(f"heroes:      {heroes}")
     print(f"pro players: {players}")
     print(f"leagues:     {leagues}")
+
+
+async def cmd_backfill_segments() -> None:
+    """Fill league and Valve tier on predictions logged before they were recorded.
+
+    Run after `reference`. Idempotent: only NULLs are filled.
+    """
+    report = await backfill_segments(get_session_factory())
+    print(f"predictions given a league:     {report.league_ids}")
+    print(f"predictions given a Valve tier: {report.valve_tiers}")
+    print("  (the league's tier now, not at prediction time - fine for rows days old)")
 
 
 async def cmd_normalize(limit: int | None) -> None:
@@ -484,6 +496,11 @@ def main() -> None:
         "reference", help="load heroes, pro-player names and leagues with Valve tiers (3 calls)"
     )
 
+    sub.add_parser(
+        "backfill-segments",
+        help="fill league and Valve tier on predictions logged before they were recorded",
+    )
+
     sub.add_parser("status", help="show checkpoint and raw row counts")
 
     args = parser.parse_args()
@@ -515,6 +532,8 @@ def main() -> None:
                 await cmd_liquipedia(args.page)
             elif args.command == "reference":
                 await cmd_reference()
+            elif args.command == "backfill-segments":
+                await cmd_backfill_segments()
             elif args.command == "normalize":
                 await cmd_normalize(args.limit)
             else:
