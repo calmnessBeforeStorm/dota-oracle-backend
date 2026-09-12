@@ -17,6 +17,7 @@ from app.core.redis import get_redis
 from app.db.models.matches import Match, Series
 from app.db.models.reference import League, TournamentStage
 from app.db.session import get_session
+from app.domain.segments import is_pro
 from app.ingestion.workers.live_poller import LIVE_FEED_KEY
 from app.schemas.common import (
     TournamentDetail,
@@ -28,17 +29,22 @@ router = APIRouter(prefix="/tournaments", tags=["tournaments"])
 
 
 async def _live_league_ids() -> set[int]:
-    """Leagues with a game on air right now, from the feed the poller writes.
+    """Leagues with a game on air right now, gated the same way the public live feed is.
 
-    Read from the same cache `/matches/live` serves, so the calendar and the live feed can
-    never disagree about what is running. An empty or expired cache means "nothing is on
+    Read from the same cache `/matches/live` serves, and reduced by the same `is_pro` check
+    `public_feed` applies there, so the calendar only ever counts a league as live when the
+    feed would show one of its games too. An empty or expired cache means "nothing is on
     air", which is exactly what it means on the live feed too: the fallback to a recent
     match is what keeps a stopped poller from emptying the tab.
     """
     cached = await get_redis().get(LIVE_FEED_KEY)
     if not cached:
         return set()
-    return {int(entry["league_id"]) for entry in orjson.loads(cached) if entry.get("league_id")}
+    return {
+        int(entry["league_id"])
+        for entry in orjson.loads(cached)
+        if entry.get("league_id") and is_pro(entry.get("valve_tier"))
+    }
 
 
 @router.get("", response_model=list[TournamentSummary])
