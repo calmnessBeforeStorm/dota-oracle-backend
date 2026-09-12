@@ -257,7 +257,13 @@
 3. Результат — таблица `leagues` с полями `steam_league_id`, `liquipedia_slug`, `tier`, `is_lan`, `prize_pool`, `organizer`, `region`, `start_date`, `end_date`.
 4. Маппинг **версионируется**: турнир может быть переклассифицирован, история решений должна сохраняться.
 
-Fallback до готовности маппинга — `tier == "premium"` из `/leagues` OpenDota.
+Fallback до готовности маппинга — `tier == "premium"` из `/leagues` OpenDota. Замер 11.09.2026
+сузил его смысл: `premium` у Valve — практически только The International, а все прочие Tier 1
+(DreamLeague, BLAST Slam, ESL One, PGL Wallachia, EWC) — `professional`, наравне с Tier 3.
+Поэтому тир Valve служит **фильтром «про / не про»** для live-ленты и сегментов точности
+(`professional`/`premium` против `excluded`/`amateur`), а Tier 1 выделяет только разметка
+Liquipedia. Тир Valve — текущий, не исторический: 34% сводок архива лежат в лигах, которые
+сейчас `excluded`, поэтому на прогноз он записывается в момент выдачи.
 
 ---
 
