@@ -31,6 +31,10 @@ dependencies = [
     # baseline. Measured 2026-09-01 on the live worker: `model.load_failed: No module named
     # 'lightgbm'` - the promotion path had never been run end to end.
     "lightgbm>=4.5",
+    # Authentication (design 2026-09-11-auth-and-pipeline-panel, section 1). PyJWT used to
+    # arrive only through redis; a direct import deserves a direct dependency.
+    "argon2-cffi>=25.1",
+    "PyJWT>=2.10",
 ]
 
 [project.optional-dependencies]

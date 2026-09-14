@@ -1,14 +1,30 @@
 """Application settings. Everything configurable lives here, nothing else reads os.environ."""
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+#: Signs tokens on a laptop and in CI, where nothing is worth protecting and nobody should need
+#: setup to run the suite. Production refuses it: it is in a public repository.
+DEV_SECRET_KEY = "dev-only-secret-key-refused-in-production"
+
+#: HS256 wants a key at least as long as its 256-bit output.
+MIN_SECRET_KEY_BYTES = 32
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # hide_input_in_errors: Settings carries secrets (SECRET_KEY, STEAM_API_KEY, the DB
+    # password) - pydantic's default error rendering embeds the full input value it rejected,
+    # which would print those secrets right back into whatever validation failure gets pasted
+    # into a log or an issue.
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        hide_input_in_errors=True,
+    )
 
     # App. Ports default to the host-side values; docker compose overrides the DB and
     # Redis ones with the in-network 5432/6379.
@@ -51,6 +67,27 @@ class Settings(BaseSettings):
     # ML
     model_dir: str = "./models"
     active_model_version: str | None = None
+
+    # Auth (design 2026-09-11-auth-and-pipeline-panel, section 1)
+    secret_key: str = DEV_SECRET_KEY
+
+    @model_validator(mode="after")
+    def production_needs_a_real_secret_key(self) -> Self:
+        """Refuse to start rather than sign tokens with a key anybody can read.
+
+        The message never includes the value: a startup failure is exactly what ends up pasted
+        into an issue.
+        """
+        if self.app_env != "production":
+            return self
+        if self.secret_key == DEV_SECRET_KEY:
+            raise ValueError("SECRET_KEY is the development default; set a real one in .env")
+        if len(self.secret_key.encode()) < MIN_SECRET_KEY_BYTES:
+            raise ValueError(
+                f"SECRET_KEY must be at least {MIN_SECRET_KEY_BYTES} bytes in production; "
+                "generate one with: openssl rand -base64 48"
+            )
+        return self
 
     @property
     def database_url(self) -> str:

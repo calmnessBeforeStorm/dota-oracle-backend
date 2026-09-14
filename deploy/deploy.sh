@@ -55,6 +55,12 @@ fail() {
 perms=$(stat -c '%a' "$ENV_FILE")
 [ "$perms" = "600" ] || fail "$ENV_FILE is mode $perms, expected 600 - run: chmod 600 $ENV_FILE"
 
+# The migration container reads the same settings as the API, so a missing key would surface
+# as a pydantic traceback halfway through the deploy. Said here, in words, before anything
+# is pulled.
+secret=$(grep -E '^SECRET_KEY=' "$ENV_FILE" | cut -d= -f2- | tr -d '"' || true)
+[ "${#secret}" -ge 32 ] || fail "SECRET_KEY in $ENV_FILE is missing or shorter than 32 characters - run: openssl rand -base64 48"
+
 # Serving a model requires the artifact and its card. Without them the predictor falls back
 # to the baseline *silently* - the log says so, but a page nobody is watching does not - so
 # this refuses to deploy rather than quietly serving worse numbers under the same version.
