@@ -89,8 +89,12 @@ async def login(
 
     user = await session.scalar(select(User).where(User.username == username))
     # Argon2 is CPU work measured in tens of milliseconds; off the event loop, or every other
-    # request waits for it.
-    stored = user.password_hash if user is not None else dummy_hash()
+    # request waits for it. That includes the dummy hash: the first unknown login per process
+    # computes it.
+    if user is not None:
+        stored = user.password_hash
+    else:
+        stored = await asyncio.to_thread(dummy_hash)
     matches = await asyncio.to_thread(verify_password, stored, password)
     if user is None or not user.is_active or not matches:
         log.info("auth.login_failed", username=username, ip=ip)

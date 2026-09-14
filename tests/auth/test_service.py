@@ -5,6 +5,7 @@ from its identity map and hide what a concurrent request actually sees.
 """
 
 import asyncio
+import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -114,6 +115,24 @@ class TestLogin:
         with pytest.raises(InvalidCredentialsError):
             await _login(sessionmaker, fake_redis)
         assert checked == [service.dummy_hash()]
+
+    async def test_the_dummy_hash_is_computed_off_the_event_loop(
+        self, sessionmaker: Sessions, fake_redis: FakeRedis, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The first unknown login per process hashes; on the loop it would stall every request."""
+        loop_thread = threading.get_ident()
+        threads: list[int] = []
+        real = service.dummy_hash
+
+        def recording_dummy_hash() -> str:
+            threads.append(threading.get_ident())
+            return real()
+
+        monkeypatch.setattr(service, "dummy_hash", recording_dummy_hash)
+        with pytest.raises(InvalidCredentialsError):
+            await _login(sessionmaker, fake_redis)
+        assert len(threads) == 1
+        assert threads[0] != loop_thread
 
     async def test_an_inactive_user_cannot_log_in(
         self, sessionmaker: Sessions, fake_redis: FakeRedis, make_user: MakeUser
