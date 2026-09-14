@@ -114,3 +114,19 @@ def test_the_details_backfill_is_not_scheduled_where_stratz_is_unreachable() -> 
     # The resolver stays: it switches source rather than stopping.
     assert f"cron:{resolve_prediction_outcomes.__name__}" in names
     assert stratz_gated(everything, stratz_available=True) == everything
+
+
+def test_valve_tiers_refresh_hourly_and_can_be_requested_again_soon() -> None:
+    """arq refuses to enqueue a job id whose result is still stored - an hour by default -
+    so the poller's request would be dead for an hour after every run. keep_result=0 is what
+    lets the throttle, not arq, decide how often it runs."""
+    from app.ingestion.workers.valve_tiers import REFRESH_VALVE_TIERS_JOB, refresh_valve_tiers
+
+    assert _job(refresh_valve_tiers).minute == 3
+    registered = [
+        function
+        for function in WorkerSettings.functions
+        if getattr(function, "name", None) == REFRESH_VALVE_TIERS_JOB
+    ]
+    assert len(registered) == 1
+    assert registered[0].keep_result_s == 0

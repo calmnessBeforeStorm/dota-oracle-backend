@@ -38,6 +38,11 @@ class League(Base, TimestampMixin):
     region: Mapped[str | None] = mapped_column(String(64))
     start_date: Mapped[date | None] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date)
+    #: Valve's own label from OpenDota `/leagues`: premium, professional, amateur or excluded.
+    #: Kept beside `tier`, never in it - `tier` is the hand-checked Liquipedia classification.
+    #: It is the *current* label: Valve re-tags leagues over time, which is why predictions
+    #: copy it at serve time instead of joining to it later.
+    valve_tier: Mapped[str | None] = mapped_column(String(16))
 
 
 class TournamentStage(Base, TimestampMixin):

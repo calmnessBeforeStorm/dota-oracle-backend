@@ -180,6 +180,31 @@ Tier 1 и отдаёт турнирный календарь. Две разны�
   `/proMatches` совпадал с самым свежим матчем в базе и не двигался десять часов, а над ним
   висело 220 предсказанных матчей.
 
+- **Лента и точность разделены на сегменты (12.09.2026, дизайн `2026-09-11-pro-segment`).**
+  Замер на проде 11.09: все 249 сверенных live-прогнозов были из лиг, которые Valve
+  помечает `excluded` (AD2L, FACEIT, миксер-кап турниры), — дашборд точности описывал домен,
+  которого модель не видела. Теперь:
+  - `leagues.valve_tier` — тир Valve из `/leagues` (`premium`/`professional`/`amateur`/
+    `excluded`), отдельно от `tier` Liquipedia. Обновляет `refresh_valve_tiers`: cron в :03 и
+    по запросу поллера, не чаще раза в 15 минут (ключ `valve_tiers:throttle`).
+  - Поллер пишет на прогноз `league_id` и `valve_tier` **в момент выдачи** и продолжает
+    предсказывать все лиги — любительские остаются контрольной группой.
+  - Правило сегмента одно — `app/domain/segments.py`, в Python и SQL, паритет держит тест:
+    Valve-pro + Liquipedia `tier1` (или `premium` без разметки) → `tier1`; прочие
+    `professional`/`premium` → `pro`; `excluded`/`amateur` → `excluded`; тир неизвестен →
+    вне сегментов.
+  - `/api/matches/live` и `/api/matches/recent` отдают только про-лиги; `/recent` фильтрует
+    по `tiers`. `/api/model/metrics` считает внутри `segment` (по умолчанию `tier1`), дрейф —
+    на каждую пару (версия × сегмент).
+  - **`premium` у Valve — практически только TI**; остальной Tier 1 — `professional`, как и
+    Tier 3. **Тир Valve — текущий**: 34% сводок архива в лигах, ставших `excluded`. Отсюда
+    запись на прогноз, а не джойн.
+  - **`sync_liquipedia` на кроне — заглушка** (`TODO(phase-2)`): новая лига получает тир
+    Liquipedia только после ручного `map-leagues`. До этого она видна в ленте под чипом
+    «Без разметки», если Valve считает её про.
+  - После выката на прод: `reference`, затем `backfill-segments` (заполняет NULL у старых
+    прогнозов; тир — текущий, не на момент прогноза).
+
 Критерий выхода из фазы 1 (§11): ≥ 40k про-матчей с игроками, перезапуск не даёт дубликатов.
 **Половина выполнена 01.09.2026:** 55 654 матча, история с 2024-08-25 — 400 страниц
 `/proMatches` дали 40 000 матчей за 13 минут без единого 429. Суточная квота OpenDota бьёт по
@@ -532,6 +557,7 @@ docker compose run --rm tools python -m app.ingestion.cli catch-up             #
 docker compose run --rm tools python -m app.ingestion.cli details --source stratz --limit 700
 docker compose run --rm tools python -m app.ingestion.cli resolve-outcomes  # исходы под прогнозы
 docker compose run --rm tools python -m app.ingestion.cli reference   # герои и имена игроков
+docker compose run --rm tools python -m app.ingestion.cli backfill-segments  # лига и тир Valve у старых прогнозов
 docker compose run --rm tools python -m app.ingestion.cli normalize
 docker compose run --rm tools python -m app.ingestion.cli status
 

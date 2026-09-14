@@ -16,6 +16,11 @@ so a minute usually holds two rows, and a paused game can hold dozens. Scoring a
 weights the evaluation by how long each minute happened to last, which is a property of the
 broadcast, not of the model. The earliest prediction in each minute wins: it is the one made
 on the least information, and it is the one the viewer actually saw first.
+
+**Segments are never mixed either.** The live poller predicts every league Valve reports,
+amateur cups included, and those stay in the log as a control group. Every query here can be
+narrowed to one segment - Tier 1, Pro, Excluded - read from the Valve tier the prediction
+recorded when it was served and the Liquipedia tier its league has now.
 """
 
 from collections.abc import Sequence
@@ -27,7 +32,9 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.matches import Match
+from app.db.models.reference import League
 from app.db.models.training import Prediction
+from app.domain.segments import SEGMENTS, Segment, segment_expr
 from app.ml.metrics import (
     accuracy,
     brier,
@@ -41,6 +48,7 @@ from app.schemas.common import (
     ModelMetrics,
     ModelVersionInfo,
     ReliabilityBin,
+    SegmentCount,
 )
 
 
@@ -58,7 +66,14 @@ class ScoredPrediction:
     predicted_at: datetime
 
 
-def _scored_rows(version: str | None = None) -> Select[Any]:
+def _in_segment(statement: Select[Any], segment: Segment) -> Select[Any]:
+    """Narrow a statement that selects from `predictions` to one segment."""
+    return statement.outerjoin(League, League.league_id == Prediction.league_id).where(
+        segment_expr(Prediction.valve_tier, League.tier) == segment
+    )
+
+
+def _scored_rows(version: str | None = None, segment: Segment | None = None) -> Select[Any]:
     """Predictions joined to their outcome, one row per (match, minute, version).
 
     `DISTINCT ON` keeps the first row of each group under the `ORDER BY`, which is why the
@@ -85,11 +100,15 @@ def _scored_rows(version: str | None = None) -> Select[Any]:
     )
     if version is not None:
         statement = statement.where(Prediction.model_version == version)
+    if segment is not None:
+        statement = _in_segment(statement, segment)
     return statement
 
 
-async def load_scored(session: AsyncSession, version: str) -> list[ScoredPrediction]:
-    rows = (await session.execute(_scored_rows(version))).all()
+async def load_scored(
+    session: AsyncSession, version: str, segment: Segment | None = None
+) -> list[ScoredPrediction]:
+    rows = (await session.execute(_scored_rows(version, segment))).all()
     return [
         ScoredPrediction(
             match_id=int(row.match_id),
@@ -136,26 +155,63 @@ class ServingProgress:
     last_prediction_at: datetime | None
 
 
-async def serving_progress(session: AsyncSession, version: str) -> ServingProgress:
+async def serving_progress(
+    session: AsyncSession, version: str, segment: Segment | None = None
+) -> ServingProgress:
     """Every match this version predicted, whether or not it can be scored yet.
 
     Counted in matches, not rows (invariant 3): the poller writes a row every thirty seconds,
     so an hour of one game would otherwise read as a hundred observations.
     """
-    row = (
-        await session.execute(
-            select(
-                func.count(func.distinct(Prediction.match_id)),
-                func.min(Prediction.predicted_at),
-                func.max(Prediction.predicted_at),
-            ).where(Prediction.model_version == version)
+    statement = (
+        select(
+            func.count(func.distinct(Prediction.match_id)),
+            func.min(Prediction.predicted_at),
+            func.max(Prediction.predicted_at),
         )
-    ).one()
+        .select_from(Prediction)
+        .where(Prediction.model_version == version)
+    )
+    if segment is not None:
+        statement = _in_segment(statement, segment)
+    row = (await session.execute(statement)).one()
     return ServingProgress(
         predicted_matches=int(row[0] or 0),
         first_prediction_at=row[1],
         last_prediction_at=row[2],
     )
+
+
+async def segment_counts(session: AsyncSession, version: str) -> tuple[list[SegmentCount], int]:
+    """Scored matches of one version per segment, and how many fall in none.
+
+    All three segments are always listed: "Tier 1: 0" is the answer the page exists to give
+    on most days, and a missing key would make it look like an error.
+    """
+    # Grouped through a subquery, not by the CASE itself: its IN-lists are bound parameters,
+    # numbered differently in SELECT and GROUP BY, and Postgres then rejects the pair as two
+    # different expressions.
+    inner = (
+        select(
+            Prediction.match_id,
+            segment_expr(Prediction.valve_tier, League.tier).label("segment"),
+        )
+        .select_from(Prediction)
+        .join(Match, Match.match_id == Prediction.match_id)
+        .outerjoin(League, League.league_id == Prediction.league_id)
+        .where(Match.radiant_win.is_not(None), Prediction.model_version == version)
+        .subquery()
+    )
+    rows = (
+        await session.execute(
+            select(inner.c.segment, func.count(func.distinct(inner.c.match_id))).group_by(
+                inner.c.segment
+            )
+        )
+    ).all()
+    found: dict[str | None, int] = {row[0]: int(row[1]) for row in rows}
+    counts = [SegmentCount(segment=name, matches=found.get(name, 0)) for name in SEGMENTS]
+    return counts, found.get(None, 0)
 
 
 def metrics_from(version: str, scored: Sequence[ScoredPrediction]) -> ModelMetrics:

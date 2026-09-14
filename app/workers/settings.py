@@ -7,6 +7,7 @@ from typing import Any, ClassVar
 
 from arq.connections import RedisSettings
 from arq.cron import cron
+from arq.worker import func
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
@@ -21,6 +22,7 @@ from app.ingestion.workers.live_poller import poll_live_games
 from app.ingestion.workers.normalize_worker import normalize_stored_payloads
 from app.ingestion.workers.outcomes import OUTCOMES_PER_RUN, resolve_prediction_outcomes
 from app.ingestion.workers.sync import sync_liquipedia
+from app.ingestion.workers.valve_tiers import refresh_valve_tiers
 from app.workers.drift import check_calibration_drift
 from app.workers.training_set import refresh_training_set
 
@@ -67,6 +69,9 @@ class WorkerSettings:
         backfill_details_hourly,
         poll_live_games,
         sync_liquipedia,
+        # keep_result=0: arq refuses a job id whose result is still stored (an hour by
+        # default), which would silence the poller's request for an hour after every run.
+        func(refresh_valve_tiers, keep_result=0, max_tries=1),
         resolve_prediction_outcomes,
         normalize_stored_payloads,
         check_calibration_drift,
@@ -78,6 +83,10 @@ class WorkerSettings:
             cron(poll_live_games, second={0, 30}, run_at_startup=True, max_tries=1),
             # Liquipedia: no more than hourly, everything else served from cache.
             cron(sync_liquipedia, minute=7, max_tries=2),
+            # Valve's league tiers gate the live feed (design 2026-09-11-pro-segment). Hourly,
+            # plus on request from the poller when a live league has none; the job throttles
+            # itself to one `/leagues` call per fifteen minutes whoever asks.
+            cron(refresh_valve_tiers, minute=3, max_tries=1),
             # Pick up matches that finished since the last pass. Hourly and cheap: one call when
             # nothing is new. Unlike the historical backfill this one is safe to schedule - it
             # cannot run away, because it stops the moment it reaches what is already stored.

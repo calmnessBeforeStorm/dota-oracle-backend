@@ -6,10 +6,17 @@ Not cosmetic - without a visible calibration curve there is no reason to trust t
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.accuracy import load_scored, metrics_from, scored_versions, serving_progress
+from app.api.accuracy import (
+    load_scored,
+    metrics_from,
+    scored_versions,
+    segment_counts,
+    serving_progress,
+)
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.session import get_session
+from app.domain.segments import Segment
 from app.ml.predictor import get_predictor
 from app.ml.registry import ModelCard, load_card
 from app.schemas.common import ModelMetrics, ModelTraining
@@ -56,6 +63,7 @@ router = APIRouter(prefix="/model", tags=["model"])
 @router.get("/metrics", response_model=ModelMetrics)
 async def model_metrics(
     version: str | None = None,
+    segment: Segment = "tier1",
     session: AsyncSession = Depends(get_session),
 ) -> ModelMetrics:
     """Calibration of served predictions, scored against how the matches actually ended.
@@ -64,13 +72,18 @@ async def model_metrics(
     data. When that version has nothing scored yet the page shows an empty dashboard, and
     that is the honest answer: an older model's calibration says nothing about the numbers
     a visitor is looking at right now. The other versions are listed so they stay reachable.
+
+    Defaults to the Tier 1 segment for the same reason: it is the domain the product promises,
+    and on most days it is empty. `segments` says where the data is instead.
     """
     versions = await scored_versions(session)
     wanted = version or get_predictor().version
-    metrics = metrics_from(wanted, await load_scored(session, wanted))
+    metrics = metrics_from(wanted, await load_scored(session, wanted, segment))
     metrics.versions = versions
+    metrics.segment = segment
+    metrics.segments, metrics.unsegmented_matches = await segment_counts(session, wanted)
 
-    progress = await serving_progress(session, wanted)
+    progress = await serving_progress(session, wanted, segment)
     metrics.predicted_matches = progress.predicted_matches
     metrics.awaiting_outcome = max(progress.predicted_matches - metrics.matches, 0)
     metrics.first_prediction_at = progress.first_prediction_at

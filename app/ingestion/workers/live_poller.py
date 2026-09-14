@@ -15,8 +15,9 @@ get its fixtures.
 features behind it. Without that, a quality drop a month from now is unexplainable.
 """
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 import orjson
 from sqlalchemy import func, select, union_all
@@ -31,6 +32,7 @@ from app.db.models.raw import RawLiveSnapshot
 from app.db.models.reference import League, TournamentStage
 from app.db.models.training import Prediction
 from app.db.session import get_session_factory
+from app.domain.segments import display_tier
 from app.domain.series import is_conditional_game
 from app.features.adapters.steam import account_ids, from_live_league_game, has_scoreboard
 from app.features.game_state import SeriesContext
@@ -39,6 +41,7 @@ from app.features.prematch_live import live_prematch
 from app.ingestion.clients.steam import SteamClient
 from app.ingestion.repository import utcnow
 from app.ingestion.sources import RawSource
+from app.ingestion.workers.valve_tiers import request_valve_tier_refresh
 from app.ml.predictor import get_predictor
 
 log = get_logger(__name__)
@@ -47,6 +50,21 @@ log = get_logger(__name__)
 #: than an empty feed, because it looks live.
 LIVE_FEED_KEY = "live:feed"
 LIVE_FEED_TTL = 120
+
+
+class LeagueContext(NamedTuple):
+    """What the league tables know about a live game's league."""
+
+    name: str | None
+    #: Liquipedia tier, `unknown` until mapped.
+    tier: str
+    fmt: SeriesFormat | None
+    is_lan: bool | None
+    #: Valve's tier from `/leagues`; None until the refresh job has seen the league.
+    valve_tier: str | None
+
+
+UNKNOWN_LEAGUE = LeagueContext(name=None, tier="unknown", fmt=None, is_lan=None, valve_tier=None)
 
 
 def _series_context(game: dict[str, Any], fmt: SeriesFormat | None) -> SeriesContext:
@@ -78,25 +96,24 @@ def _series_context(game: dict[str, Any], fmt: SeriesFormat | None) -> SeriesCon
     )
 
 
-async def _league_context(
-    session: AsyncSession, league_ids: set[int]
-) -> dict[int, tuple[str | None, str, SeriesFormat | None, bool | None]]:
-    """Name, tier, current stage format and LAN flag per league, from what phase 2 marked up.
+async def _league_context(session: AsyncSession, league_ids: set[int]) -> dict[int, LeagueContext]:
+    """Name, tiers, current stage format and LAN flag per league.
 
     `is_lan` is here because the feature vector needs it and only this table has it. It stays
     None for an unmapped league, and the vector reports that rather than defaulting to
-    "online" - the same rule the format follows.
+    "online" - the same rule the format follows. `valve_tier` is what the API gates the feed
+    on, and what each prediction records.
     """
     if not league_ids:
         return {}
 
     leagues = {
-        int(league_id): (name, str(tier), is_lan)
-        for league_id, name, tier, is_lan in (
+        int(league_id): (name, str(tier), is_lan, valve_tier)
+        for league_id, name, tier, is_lan, valve_tier in (
             await session.execute(
-                select(League.league_id, League.name, League.tier, League.is_lan).where(
-                    League.league_id.in_(league_ids)
-                )
+                select(
+                    League.league_id, League.name, League.tier, League.is_lan, League.valve_tier
+                ).where(League.league_id.in_(league_ids))
             )
         ).all()
     }
@@ -118,9 +135,52 @@ async def _league_context(
             formats[int(league_id)] = SeriesFormat(str(default_format))
 
     return {
-        league_id: (name, tier, formats.get(league_id), is_lan)
-        for league_id, (name, tier, is_lan) in leagues.items()
+        league_id: LeagueContext(
+            name=name,
+            tier=tier,
+            fmt=formats.get(league_id),
+            is_lan=is_lan,
+            valve_tier=valve_tier,
+        )
+        for league_id, (name, tier, is_lan, valve_tier) in leagues.items()
     }
+
+
+def leagues_without_valve_tier(
+    contexts: Mapping[int, LeagueContext], league_ids: set[int]
+) -> set[int]:
+    """Live leagues the feed would hide for want of a Valve tier."""
+    return {
+        league_id
+        for league_id in league_ids
+        if contexts.get(league_id, UNKNOWN_LEAGUE).valve_tier is None
+    }
+
+
+def prediction_row(
+    *,
+    match_id: int,
+    minute: int,
+    captured_at: datetime,
+    model_version: str,
+    p_radiant: float,
+    features: dict[str, Any],
+    league_id: int,
+    context: LeagueContext,
+) -> Prediction:
+    """The log row. The Valve tier is copied now, not joined later: Valve re-tags leagues
+    over time (34% of the archive sits in leagues that are `excluded` today), and a join
+    would move old predictions between dashboard segments behind everybody's back."""
+    return Prediction(
+        match_id=match_id,
+        minute=minute,
+        predicted_at=captured_at,
+        model_version=model_version,
+        p_radiant=p_radiant,
+        features=features,
+        league_id=league_id or None,
+        valve_tier=context.valve_tier,
+    )
 
 
 def _feed_entry(
@@ -133,6 +193,7 @@ def _feed_entry(
     series: SeriesContext,
     series_format_known: bool,
     team_history: int,
+    valve_tier: str | None = None,
 ) -> dict[str, Any]:
     scoreboard = game.get("scoreboard") or {}
     radiant = game.get("radiant_team") or {}
@@ -141,7 +202,11 @@ def _feed_entry(
         "match_id": int(game.get("match_id", 0) or 0),
         "league_id": int(game.get("league_id", 0) or 0),
         "league_name": league_name,
-        "tier": tier,
+        # What the reader sees, with the section 3 premium fallback applied.
+        "tier": display_tier(valve_tier, tier),
+        # What the API gates on. The poller keeps every game in the cache; `/matches/live`
+        # decides what is public (design 2026-09-11-pro-segment).
+        "valve_tier": valve_tier,
         # Orders the feed where the tier cannot: almost every live league is unmarked.
         "team_history": team_history,
         "radiant": {
@@ -269,6 +334,8 @@ async def poll_live_games(ctx: dict[str, Any]) -> int:
         league_ids = {int(g.get("league_id", 0) or 0) for g in games if g.get("league_id")}
         discovered = await _register_unseen_leagues(session, league_ids)
         contexts = await _league_context(session, league_ids)
+        if leagues_without_valve_tier(contexts, league_ids):
+            await request_valve_tier_refresh(ctx)
         # One lookup for the whole tick rather than two per game.
         team_ids = {
             side_team_id(game, side) for game in games for side in ("radiant_team", "dire_team")
@@ -303,8 +370,8 @@ async def poll_live_games(ctx: dict[str, Any]) -> int:
             league_id = int(game.get("league_id", 0) or 0)
             # A live game can belong to a league the backfill has never reached, so the
             # name is genuinely unknown rather than blank - the UI falls back to the id.
-            league_name, tier, fmt, is_lan = contexts.get(league_id, (None, "unknown", None, None))
-            series = _series_context(game, fmt)
+            context = contexts.get(league_id, UNKNOWN_LEAGUE)
+            series = _series_context(game, context.fmt)
 
             try:
                 # The skill half of the pre-match block, read point-in-time from stored
@@ -320,7 +387,7 @@ async def poll_live_games(ctx: dict[str, Any]) -> int:
                 state = from_live_league_game(
                     game,
                     series=series,
-                    is_lan=is_lan,
+                    is_lan=context.is_lan,
                     prematch=prematch,
                     prematch_prior=prior,
                 )
@@ -331,13 +398,15 @@ async def poll_live_games(ctx: dict[str, Any]) -> int:
                 continue
 
             session.add(
-                Prediction(
+                prediction_row(
                     match_id=match_id,
                     minute=state.minute,
-                    predicted_at=captured_at,
+                    captured_at=captured_at,
                     model_version=predictor.version,
                     p_radiant=p_radiant,
                     features=features,
+                    league_id=league_id,
+                    context=context,
                 )
             )
 
@@ -346,14 +415,15 @@ async def poll_live_games(ctx: dict[str, Any]) -> int:
                 p_radiant,
                 predictor.version,
                 state.minute,
-                league_name,
-                tier,
+                context.name,
+                context.tier,
                 series,
-                series_format_known=fmt is not None,
+                series_format_known=context.fmt is not None,
                 team_history=notability(
                     radiant_matches=history.get(side_team_id(game, "radiant_team")),
                     dire_matches=history.get(side_team_id(game, "dire_team")),
                 ),
+                valve_tier=context.valve_tier,
             )
             feed.append(entry)
             await publish_prediction(match_id, orjson.dumps(entry).decode())
