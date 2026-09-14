@@ -215,6 +215,20 @@ Tier 1 и отдаёт турнирный календарь. Две разны�
     «Без разметки», если Valve считает её про.
   - После выката на прод: `reference`, затем `backfill-segments` (заполняет NULL у старых
     прогнозов; тир — текущий, не на момент прогноза).
+- **Авторизация (раздел 1 дизайна `2026-09-11-auth-and-pipeline-panel`) — 14.09.2026.**
+  Пакет `app/auth/`: Argon2id, JWT HS256 (access 15 минут в теле, refresh 7 дней в
+  `HttpOnly`-cookie с `Path=/api/auth` и `SameSite=Strict`), таблица сессий на устройство,
+  ротация refresh с детектом повторного предъявления — отзываются **все** сессии пользователя.
+  Блокировка: 5 неудач на логин и 20 на адрес за 15 минут. Права — по access-токену без базы,
+  `require_permission(code)`; отозванное право живёт до конца уже выданного access-токена.
+  **Ротация — условный `UPDATE` по предъявленному хешу**, иначе два одновременных `refresh`
+  одним токеном оба проходят проверку и детектор слеп. Коды прав — `app/auth/permissions.py`,
+  тест держит их равными подкомандам `app.ingestion.cli`; раздел 2 заменит источник реестром.
+  **Пользователя создаёт только CLI**, пароль только через `getpass`:
+  `python -m app.auth.cli create-user|set-password|revoke-sessions|grant-all`.
+  **`SECRET_KEY` в production обязателен** (≥ 32 байт, не dev-значение) — без него не стартуют
+  API, воркер и контейнер миграций; `deploy.sh` проверяет это до `pull`.
+  Раздел 2 (запуск команд) и фронтенд — ещё нет.
 
 Критерий выхода из фазы 1 (§11): ≥ 40k про-матчей с игроками, перезапуск не даёт дубликатов.
 **Половина выполнена 01.09.2026:** 55 654 матча, история с 2024-08-25 — 400 страниц
@@ -576,6 +590,10 @@ docker compose run --rm tools python -m app.ingestion.cli status
 docker compose run --rm tools python -m app.ingestion.cli map-leagues            # сухой прогон
 docker compose run --rm tools python -m app.ingestion.cli map-leagues --apply    # применить уверенные
 docker compose run --rm tools python -m app.ingestion.cli liquipedia "The International/2024"
+
+# пользователи админ-панели (пароль спрашивается через getpass; на проде без -T)
+docker compose run --rm tools python -m app.auth.cli create-user --username adilet --display-name "Адилет"
+docker compose run --rm tools python -m app.auth.cli grant-all --username adilet
 ```
 
 **`alembic downgrade base` на рабочей БД не запускать.** Он дропает все таблицы вместе с
