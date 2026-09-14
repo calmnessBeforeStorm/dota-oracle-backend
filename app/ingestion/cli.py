@@ -376,7 +376,8 @@ async def cmd_status() -> None:
         print(f"{label:<34} {count}")
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """The command line, built without parsing anything, so tests can list its commands."""
     parser = argparse.ArgumentParser(prog="app.ingestion.cli")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -503,7 +504,11 @@ def main() -> None:
 
     sub.add_parser("status", help="show checkpoint and raw row counts")
 
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     configure_logging(get_settings().log_level)
 
     async def run() -> None:
