@@ -168,7 +168,9 @@ async def refresh(
     # CursorResult carries rowcount; the base Result type mypy infers here does not.
     if int(rotated.rowcount or 0) != 1:  # type: ignore[attr-defined]
         await session.rollback()
-        await _reject_reuse(session, row.user_id, ip)
+        # row is expired after rollback; claims.user_id was already checked equal to it above,
+        # and unlike an ORM attribute it needs no I/O to read.
+        await _reject_reuse(session, claims.user_id, ip)
         raise RefreshRejectedError
 
     await session.commit()

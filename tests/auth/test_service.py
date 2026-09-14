@@ -198,6 +198,42 @@ class TestRefresh:
         assert event["ip"] == IP
         assert laptop.refresh_token not in repr(logs)
 
+    async def test_losing_a_concurrent_rotation_counts_as_reuse(
+        self,
+        sessionmaker: Sessions,
+        fake_redis: FakeRedis,
+        make_user: MakeUser,
+        logs: list[dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two requests present one token; the other rotates between our check and our update."""
+        await make_user()
+        issued = await _login(sessionmaker, fake_redis)
+
+        async with sessionmaker() as session:
+            real_get = session.get
+
+            async def get_after_a_concurrent_rotation(
+                entity: Any, ident: Any, **kwargs: Any
+            ) -> Any:
+                if entity is User:
+                    async with sessionmaker() as other:
+                        await other.execute(
+                            update(AuthSession).values(token_hash="rotated-by-the-other-request")
+                        )
+                        await other.commit()
+                return await real_get(entity, ident, **kwargs)
+
+            monkeypatch.setattr(session, "get", get_after_a_concurrent_rotation)
+            with pytest.raises(RefreshRejectedError):
+                await service.refresh(
+                    session, refresh_token=issued.refresh_token, ip=IP, secret=SECRET
+                )
+
+        (row,) = await _rows(sessionmaker)
+        assert row.revoked_at is not None
+        assert any(e["event"] == "auth.refresh_reuse" for e in logs)
+
     async def test_a_revoked_session_cannot_refresh(
         self, sessionmaker: Sessions, fake_redis: FakeRedis, make_user: MakeUser
     ) -> None:
