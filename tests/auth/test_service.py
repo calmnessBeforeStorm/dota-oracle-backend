@@ -308,6 +308,46 @@ class TestRefresh:
         assert row.revoked_at is not None
         assert any(e["event"] == "auth.refresh_reuse" for e in logs)
 
+    async def test_a_logout_racing_a_refresh_is_not_reported_as_reuse(
+        self,
+        sessionmaker: Sessions,
+        fake_redis: FakeRedis,
+        make_user: MakeUser,
+        logs: list[dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The session is revoked (a logout in another tab) between our check and our update. The
+        rotation matches no row, but the token was never reused: nothing else is revoked."""
+        await make_user()
+        issued = await _login(sessionmaker, fake_redis)
+        other_device = await _login(sessionmaker, fake_redis)
+        revoked_id = decode_refresh_token(issued.refresh_token, SECRET).session_id
+
+        async with sessionmaker() as session:
+            real_get = session.get
+
+            async def get_after_a_concurrent_logout(entity: Any, ident: Any, **kwargs: Any) -> Any:
+                if entity is User:
+                    async with sessionmaker() as other:
+                        await other.execute(
+                            update(AuthSession)
+                            .where(AuthSession.id == revoked_id)
+                            .values(revoked_at=datetime.now(UTC))
+                        )
+                        await other.commit()
+                return await real_get(entity, ident, **kwargs)
+
+            monkeypatch.setattr(session, "get", get_after_a_concurrent_logout)
+            with pytest.raises(RefreshRejectedError):
+                await service.refresh(
+                    session, refresh_token=issued.refresh_token, ip=IP, secret=SECRET
+                )
+
+        other_id = decode_refresh_token(other_device.refresh_token, SECRET).session_id
+        live = {row.id for row in await _rows(sessionmaker) if row.revoked_at is None}
+        assert live == {other_id}
+        assert not any(e["event"] == "auth.refresh_reuse" for e in logs)
+
     async def test_a_revoked_session_cannot_refresh(
         self, sessionmaker: Sessions, fake_redis: FakeRedis, make_user: MakeUser
     ) -> None:

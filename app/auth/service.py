@@ -178,8 +178,14 @@ async def refresh(
     # CursorResult carries rowcount; the base Result type mypy infers here does not.
     if int(rotated.rowcount or 0) != 1:  # type: ignore[attr-defined]
         await session.rollback()
-        # row is expired after rollback; claims.user_id was already checked equal to it above,
-        # and unlike an ORM attribute it needs no I/O to read.
+        # No row matched either because the hash changed (reuse) or because the session was
+        # revoked meanwhile - a logout in another tab, `revoke-sessions`. Only a re-read tells
+        # them apart, and a revoked session is a plain rejection, not theft.
+        current = await session.get(AuthSession, claims.session_id, populate_existing=True)
+        if current is None or current.revoked_at is not None:
+            raise RefreshRejectedError
+        # claims.user_id was already checked equal to the row's user above, and unlike an ORM
+        # attribute it needs no I/O to read.
         await _reject_reuse(session, claims.user_id, ip)
         raise RefreshRejectedError
 
