@@ -25,6 +25,12 @@
 	# prefix in its own routes, so stripping it here would 404 everything.
 	@api path /api/* /ws/*
 	handle @api {
+		# Do not add `trusted_proxies` here, and do not put a proxying CDN (Cloudflare's orange
+		# cloud) in front, without revisiting the login lockout in app/auth/lockout.py. Its
+		# per-address lock is sound only while Caddy replaces any X-Forwarded-For the client sent
+		# (the default without `trusted_proxies`) and uvicorn takes the leftmost entry. With
+		# `trusted_proxies`, clients choose their own address; without it but behind a proxy,
+		# every client shares the proxy's address and locks the others out.
 		reverse_proxy api:8000
 	}
 
