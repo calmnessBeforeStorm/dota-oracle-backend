@@ -79,6 +79,12 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 
 # Behind Caddy, so uvicorn binds every interface inside the container network and trusts the
 # forwarded headers it is given - without those the client IP in the logs is Caddy's.
+#
+# `--forwarded-allow-ips "*"` trusts X-Forwarded-For from *anyone who reaches this port*. That is
+# safe only because the port is not published: Caddy is the one thing that reaches it. The login
+# lockout counts failures per address (app/auth/lockout.py), so publishing 8000 would let anyone
+# send a fresh address with every guess and turn the per-address lock into decoration - and
+# nothing here would say so.
 CMD ["uvicorn", "app.main:app", \
      "--host", "0.0.0.0", \
      "--port", "8000", \
