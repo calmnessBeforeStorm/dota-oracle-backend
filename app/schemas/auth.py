@@ -5,9 +5,13 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+#: The longest username login accepts. The CLI refuses to create a longer one: a user whose name
+#: the login form rejects is a user nobody can sign in as.
+USERNAME_MAX_LENGTH = 64
+
 
 class LoginRequest(BaseModel):
-    username: str = Field(min_length=1, max_length=64)
+    username: str = Field(min_length=1, max_length=USERNAME_MAX_LENGTH)
     #: Bounded because Argon2 runs over whatever arrives: a megabyte password is CPU for free.
     password: str = Field(min_length=1, max_length=1024)
 

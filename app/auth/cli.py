@@ -23,6 +23,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.models.auth import User
 from app.db.session import dispose_engine, get_session_factory
+from app.schemas.auth import USERNAME_MAX_LENGTH
 
 MIN_PASSWORD_LENGTH = 12
 
@@ -54,6 +55,10 @@ async def _find(session: AsyncSession, username: str) -> User:
 async def create_user(
     session_factory: Sessions, *, username: str, display_name: str, password: str
 ) -> User:
+    if len(username) > USERNAME_MAX_LENGTH:
+        raise UsageError(
+            f"username must be at most {USERNAME_MAX_LENGTH} characters: login refuses longer ones"
+        )
     async with session_factory() as session:
         user = User(
             username=username,

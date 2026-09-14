@@ -11,6 +11,7 @@ from app.auth import cli
 from app.auth.passwords import verify_password
 from app.auth.permissions import RUNS_VIEW, known_permissions
 from app.db.models.auth import AuthSession, User
+from app.schemas.auth import USERNAME_MAX_LENGTH
 from tests.auth.conftest import MakeUser
 
 Sessions = async_sessionmaker[AsyncSession]
@@ -68,6 +69,16 @@ class TestCreateUser:
         assert user.display_name == "Adilet"
         assert user.permissions == list(known_permissions())
         assert verify_password(user.password_hash, NEW_PASSWORD)
+
+    async def test_refuses_a_username_login_would_reject(self, sessionmaker: Sessions) -> None:
+        """A user the login form can never name is a user nobody can sign in as."""
+        too_long = "x" * (USERNAME_MAX_LENGTH + 1)
+        with pytest.raises(cli.UsageError, match="at most"):
+            await cli.create_user(
+                sessionmaker, username=too_long, display_name="Adilet", password=NEW_PASSWORD
+            )
+        async with sessionmaker() as session:
+            assert list(await session.scalars(select(User))) == []
 
     async def test_refuses_a_taken_username(self, sessionmaker: Sessions) -> None:
         await cli.create_user(
