@@ -34,6 +34,12 @@ class FakeRedis:
         self.values[name] = str(value)
         return value
 
+    async def decr(self, name: str) -> int:
+        # Like Redis: a missing key starts at 0, and the result keeps whatever expiry it had.
+        value = int(self.values.get(name, "0")) - 1
+        self.values[name] = str(value)
+        return value
+
     async def expire(self, name: str, time: int, nx: bool = False) -> bool:
         if name not in self.values or (nx and name in self.ttls):
             return False

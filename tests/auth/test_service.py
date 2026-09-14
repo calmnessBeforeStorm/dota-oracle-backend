@@ -4,6 +4,8 @@ Each call gets its own session, the way each request does: one shared session wo
 from its identity map and hide what a concurrent request actually sees.
 """
 
+import asyncio
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -13,7 +15,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth import service
-from app.auth.lockout import LOCK_SECONDS, failure_key, lock_key
+from app.auth.lockout import LOCK_SECONDS, LOGIN_LIMIT, failure_key, lock_key
 from app.auth.service import (
     InvalidCredentialsError,
     IssuedTokens,
@@ -143,6 +145,59 @@ class TestLogin:
             await _login(sessionmaker, fake_redis, password="wrong")
         await _login(sessionmaker, fake_redis)
         assert failure_key("login", "adilet") not in fake_redis.values
+        # The address counter keeps the failure and forgets the success.
+        assert fake_redis.values[failure_key("ip", IP)] == "1"
+
+    async def test_concurrent_attempts_cannot_outrun_the_lock(
+        self,
+        sessionmaker: Sessions,
+        fake_redis: FakeRedis,
+        make_user: MakeUser,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Requests that arrive while earlier ones are still inside Argon2 must already be counted,
+        or every one of them passes the lock check and spends a hash verification."""
+        await make_user()
+        verified: list[str] = []
+
+        def slow_wrong(password_hash: str, password: str) -> bool:
+            time.sleep(0.05)
+            verified.append(password_hash)
+            return False
+
+        monkeypatch.setattr(service, "verify_password", slow_wrong)
+        attempts = 12
+        outcomes = await asyncio.gather(
+            *(_login(sessionmaker, fake_redis, password="wrong") for _ in range(attempts)),
+            return_exceptions=True,
+        )
+
+        assert len(verified) == LOGIN_LIMIT
+        refused = [o for o in outcomes if isinstance(o, InvalidCredentialsError)]
+        locked = [o for o in outcomes if isinstance(o, LoginLockedError)]
+        assert len(refused) == LOGIN_LIMIT
+        assert len(locked) == attempts - LOGIN_LIMIT
+
+    async def test_a_correct_password_on_the_last_allowed_attempt_succeeds(
+        self, sessionmaker: Sessions, fake_redis: FakeRedis, make_user: MakeUser
+    ) -> None:
+        await make_user()
+        for _ in range(LOGIN_LIMIT - 1):
+            with pytest.raises(InvalidCredentialsError):
+                await _login(sessionmaker, fake_redis, password="wrong")
+        issued = await _login(sessionmaker, fake_redis)
+        assert issued.access_token
+
+    async def test_the_attempt_after_the_limit_is_locked(
+        self, sessionmaker: Sessions, fake_redis: FakeRedis, make_user: MakeUser
+    ) -> None:
+        await make_user()
+        for _ in range(LOGIN_LIMIT):
+            with pytest.raises(InvalidCredentialsError):
+                await _login(sessionmaker, fake_redis, password="wrong")
+        with pytest.raises(LoginLockedError) as caught:
+            await _login(sessionmaker, fake_redis)
+        assert caught.value.retry_after == LOCK_SECONDS
 
     async def test_the_password_is_never_logged(
         self,

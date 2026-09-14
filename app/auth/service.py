@@ -80,17 +80,23 @@ async def login(
         log.info("auth.login_locked", username=username, ip=ip, retry_after=wait)
         raise LoginLockedError(wait)
 
+    # Counted before any database or password work: counted after Argon2, every request that
+    # arrived during the check passed the lock check above.
+    wait = await lockout.count_attempt(redis, username=username, ip=ip)
+    if wait is not None:
+        log.info("auth.login_locked", username=username, ip=ip, retry_after=wait)
+        raise LoginLockedError(wait)
+
     user = await session.scalar(select(User).where(User.username == username))
     # Argon2 is CPU work measured in tens of milliseconds; off the event loop, or every other
     # request waits for it.
     stored = user.password_hash if user is not None else dummy_hash()
     matches = await asyncio.to_thread(verify_password, stored, password)
     if user is None or not user.is_active or not matches:
-        await lockout.record_failure(redis, username=username, ip=ip)
         log.info("auth.login_failed", username=username, ip=ip)
         raise InvalidCredentialsError
 
-    await lockout.reset_login(redis, username=username)
+    await lockout.forgive_success(redis, username=username, ip=ip)
     now = _now()
     row = AuthSession(
         id=uuid.uuid4(),
