@@ -95,16 +95,38 @@ def parse_pro_players(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+#: Bind parameters one statement may carry. Postgres counts them in an int16, so the protocol
+#: ceiling is 32767 and asyncpg refuses anything above it - "the number of query arguments cannot
+#: exceed 32767". These loaders send every row of a reference table in one statement, so the real
+#: limit is a row count: `/leagues` crossed it the day `valve_tier` became a fourth column
+#: (10205 rows x 4 = 40820) and `reference` stopped loading anything at all, which leaves every
+#: league without a Valve tier and the live feed empty. `/proPlayers` was twenty-one parameters
+#: short of the same wall. Budgeted well below the ceiling because SQLAlchemy also binds a
+#: parameter for each column default it renders - `leagues.tier` among them - which `rows` does
+#: not name.
+MAX_BIND_PARAMS = 20000
+
+
 async def _upsert(session: AsyncSession, model: Any, rows: list[dict[str, Any]], key: str) -> int:
+    """Insert-or-update every row, in as few statements as the protocol allows.
+
+    Chunked rather than sent whole: see `MAX_BIND_PARAMS`. Idempotence is unaffected (invariant
+    5) - each chunk carries the same conflict clause, so a re-run overwrites the same rows.
+    """
     if not rows:
         return 0
-    statement = insert(model).values(rows)
+
     updatable = sorted(set(rows[0]) - {key, "created_at"})
-    statement = statement.on_conflict_do_update(
-        index_elements=[key],
-        set_={name: getattr(statement.excluded, name) for name in updatable},
-    )
-    await session.execute(statement)
+    per_row = len(rows[0])
+    chunk_size = max(1, MAX_BIND_PARAMS // per_row)
+
+    for start in range(0, len(rows), chunk_size):
+        statement = insert(model).values(rows[start : start + chunk_size])
+        statement = statement.on_conflict_do_update(
+            index_elements=[key],
+            set_={name: getattr(statement.excluded, name) for name in updatable},
+        )
+        await session.execute(statement)
     return len(rows)
 
 
