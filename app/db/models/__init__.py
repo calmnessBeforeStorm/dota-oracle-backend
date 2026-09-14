@@ -1,5 +1,6 @@
 """Import every model module so `Base.metadata` is complete for Alembic autogenerate."""
 
+from app.db.models.auth import AuthSession, User
 from app.db.models.enums import LeagueTier, SeriesFormat, StageType
 from app.db.models.matches import (
     Match,
@@ -26,6 +27,7 @@ from app.db.models.training import (
 )
 
 __all__ = [
+    "AuthSession",
     "IngestCheckpoint",
     "League",
     "LeagueMapping",
@@ -49,4 +51,5 @@ __all__ = [
     "TeamFeature",
     "TeamRoster",
     "TournamentStage",
+    "User",
 ]
